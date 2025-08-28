@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 脚本版本
-SCRIPT_VERSION="v1.9.0"
+SCRIPT_VERSION="v2.0.0"
 
 # 临时配置变量（仅在配置过程中使用）
 NAT_LISTEN_PORT=""
@@ -98,6 +98,31 @@ RULES_DIR="${CONFIG_DIR}/rules"
 # 默认tls域名（双端Realm架构需要相同SNI）
 DEFAULT_SNI_DOMAIN="www.tesla.com"
 
+# 生成network配置
+generate_network_config() {
+    local config_file="/etc/realm/config.json"
+    local base_network='{
+        "no_tcp": false,
+        "use_udp": true,
+        "tcp_timeout": 5,
+        "udp_timeout": 30,
+        "tcp_keepalive": 12,
+        "tcp_keepalive_probe": 3
+    }'
+
+    # 如果配置文件存在且有Proxy Protocol配置，则合并
+    if [ -f "$config_file" ]; then
+        local existing_proxy=$(jq -r '.network | {send_proxy, send_proxy_version, accept_proxy, accept_proxy_timeout} | to_entries | map(select(.value != null)) | from_entries' "$config_file" 2>/dev/null)
+        if [ "$existing_proxy" != "{}" ] && [ "$existing_proxy" != "null" ]; then
+            echo "$base_network" | jq ". + $existing_proxy"
+            return
+        fi
+    fi
+
+    # 没有Proxy配置，返回基础配置
+    echo "$base_network"
+}
+
 # 统一的realm配置模板
 generate_base_config_template() {
     cat <<EOF
@@ -119,14 +144,7 @@ generate_base_config_template() {
         "max_ttl": 1800,
         "cache_size": 256
     },
-    "network": {
-        "no_tcp": false,
-        "use_udp": true,
-        "tcp_timeout": 5,
-        "udp_timeout": 30,
-        "tcp_keepalive": 12,
-        "tcp_keepalive_probe": 3
-    }
+    "network": $(generate_network_config)
 }
 EOF
 }
@@ -3214,6 +3232,18 @@ proxy_management_menu() {
         echo -e "${GREEN}=== Proxy Protocol 管理 ===${NC}"
         echo ""
 
+        # 显示全局状态
+        local config_file="/etc/realm/config.json"
+        local global_send_proxy=$(jq -r '.network.send_proxy // false' "$config_file" 2>/dev/null)
+        if [ "$global_send_proxy" = "true" ]; then
+            echo -e "${GREEN}全局[开启]${NC}"
+        else
+            echo -e "${RED}全局[关闭]${NC}"
+        fi
+        echo ""
+        echo "当前规则列表(可单独开启或关闭覆盖全局):"
+        echo ""
+
         # 显示规则列表和Proxy状态
         if ! list_rules_with_info "proxy"; then
             echo ""
@@ -3222,12 +3252,42 @@ proxy_management_menu() {
         fi
 
         echo ""
-        read -p "请输入要配置的规则ID(多ID使用逗号,分隔): " rule_input
+        echo "多ID使用逗号,分隔"
+        read -p "请输入要配置的规则ID（输入0切换全局状态）: " rule_input
         if [ -z "$rule_input" ]; then
             return
         fi
 
+        # 处理全局状态切换（输入0）
+        if [ "$rule_input" = "0" ]; then
+            echo ""
+            local config_file="/etc/realm/config.json"
+            local current_status=$(jq -r '.network.send_proxy // false' "$config_file" 2>/dev/null)
+            local temp_config=$(mktemp)
 
+            if [ "$current_status" = "true" ]; then
+                # 当前已开启，切换为关闭（删除相关字段）
+                echo -e "${YELLOW}关闭全局Proxy Protocol...${NC}"
+                jq 'del(.network.send_proxy) |
+                    del(.network.send_proxy_version) |
+                    del(.network.accept_proxy) |
+                    del(.network.accept_proxy_timeout)' "$config_file" > "$temp_config"
+                mv "$temp_config" "$config_file"
+                echo -e "${GREEN}✓ 已关闭全局Proxy Protocol${NC}"
+            else
+                # 当前已关闭，切换为开启（插入字段）
+                echo -e "${YELLOW}开启全局Proxy Protocol...${NC}"
+                jq '.network.send_proxy = true |
+                    .network.send_proxy_version = 2 |
+                    .network.accept_proxy = true |
+                    .network.accept_proxy_timeout = 5' "$config_file" > "$temp_config"
+                mv "$temp_config" "$config_file"
+                echo -e "${GREEN}✓ 已开启全局Proxy Protocol${NC}"
+            fi
+
+            read -p "按回车键继续..."
+            continue
+        fi
 
         # 显示Proxy协议版本选择
         echo ""
@@ -6878,7 +6938,6 @@ download_speedtest_script() {
         return 1
     fi
 }
-
 # 中转网络链路测试菜单
 speedtest_menu() {
     local speedtest_script="/etc/realm/speedtest.sh"
@@ -6894,6 +6953,46 @@ speedtest_menu() {
     echo -e "${BLUE}启动测速工具...${NC}"
     echo ""
     bash "$speedtest_script"
+
+    # 返回后暂停
+    echo ""
+    read -p "按回车键返回主菜单..."
+}
+# 下载端口流量犬脚本
+download_port_traffic_dog_script() {
+    local script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/port-traffic-dog.sh"
+    local target_path="/usr/local/bin/port-traffic-dog.sh"
+
+    echo -e "${GREEN}正在下载最新版端口流量犬脚本...${NC}"
+
+    # 创建目录
+    mkdir -p "$(dirname "$target_path")"
+
+    # 使用统一多源下载函数
+    if download_from_sources "$script_url" "$target_path"; then
+        chmod +x "$target_path"
+        return 0
+    else
+        echo -e "${RED}请检查网络连接${NC}"
+        return 1
+    fi
+}
+
+# 端口流量犬菜单
+port_traffic_dog_menu() {
+    local dog_script="/usr/local/bin/port-traffic-dog.sh"
+
+    # 每次都下载最新版本
+    if ! download_port_traffic_dog_script; then
+        echo -e "${RED}无法下载端口流量犬脚本，功能暂时不可用${NC}"
+        read -p "按回车键返回主菜单..."
+        return 1
+    fi
+
+    # 调用端口流量犬脚本
+    echo -e "${BLUE}启动端口流量犬...${NC}"
+    echo ""
+    bash "$dog_script"
 
     # 返回后暂停
     echo ""
@@ -6919,12 +7018,13 @@ show_menu() {
         echo -e "${GREEN}3.${NC} 重启服务"
         echo -e "${GREEN}4.${NC} 停止服务"
         echo -e "${GREEN}5.${NC} 查看日志"
-        echo -e "${BLUE}6.${NC} 中转网络链路测试"
-        echo -e "${RED}7.${NC} 卸载服务"
+        echo -e "${BLUE}6.${NC} 端口流量犬（统计端口流量）"
+        echo -e "${BLUE}7.${NC} 中转网络链路测试"
+        echo -e "${RED}8.${NC} 卸载服务"
         echo -e "${YELLOW}0.${NC} 退出"
         echo ""
 
-        read -p "请输入选择 [0-7]: " choice
+        read -p "请输入选择 [0-8]: " choice
         echo ""
 
         case $choice in
@@ -6953,10 +7053,13 @@ show_menu() {
                 journalctl -u realm -f --no-pager
                 ;;
             6)
+                port_traffic_dog_menu
+                ;;
+            7)
                 check_dependencies
                 speedtest_menu
                 ;;
-            7)
+            8)
                 check_dependencies
                 uninstall_realm
                 read -p "按回车键继续..."
@@ -6966,7 +7069,7 @@ show_menu() {
                 exit 0
                 ;;
             *)
-                echo -e "${RED}无效选择，请输入 0-7${NC}"
+                echo -e "${RED}无效选择，请输入 0-8${NC}"
                 read -p "按回车键继续..."
                 ;;
         esac
