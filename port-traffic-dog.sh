@@ -101,7 +101,7 @@ install_missing_tools() {
 check_dependencies() {
     local silent_mode=${1:-false}
     local missing_tools=()
-    local required_tools=("nft" "tc" "ss" "jq" "awk" "bc")
+    local required_tools=("nft" "tc" "ss" "jq" "awk" "bc" "unzip")
 
     for tool in "${required_tools[@]}"; do
         if ! command -v "$tool" >/dev/null 2>&1; then

@@ -23,7 +23,7 @@ RULE_ID=""
 RULE_NAME=""
 
 # 依赖工具列表
-REQUIRED_TOOLS=("curl" "wget" "tar" "grep" "cut" "bc")
+REQUIRED_TOOLS=("curl" "wget" "tar" "grep" "cut" "bc" "jq")
 
 # 通用的字段初始化函数
 init_rule_field() {
@@ -248,6 +248,7 @@ manage_dependencies() {
                     "wget") apt-get install -y wget >/dev/null 2>&1 && echo -e "${GREEN}✓${NC} wget 安装成功" ;;
                     "tar") apt-get install -y tar >/dev/null 2>&1 && echo -e "${GREEN}✓${NC} tar 安装成功" ;;
                     "bc") apt-get install -y bc >/dev/null 2>&1 && echo -e "${GREEN}✓${NC} bc 安装成功" ;;
+                    "jq") apt-get install -y jq >/dev/null 2>&1 && echo -e "${GREEN}✓${NC} jq 安装成功" ;;
                     "nc")
                         # 确保安装正确的netcat版本
                         apt-get remove -y netcat-traditional >/dev/null 2>&1
