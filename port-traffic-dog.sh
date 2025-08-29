@@ -3,7 +3,7 @@
 set -euo pipefail
 
 # 全局变量
-readonly SCRIPT_VERSION="1.0.0"
+readonly SCRIPT_VERSION="1.0.2"
 readonly SCRIPT_NAME="端口流量犬"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
