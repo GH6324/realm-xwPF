@@ -453,9 +453,12 @@ get_period_traffic_cached() {
     # 查找对应的快照文件
     local snapshot_file="$SNAPSHOT_DIR/port_${port}_${period}_${time_key}.json"
 
-    # 如果快照文件不存在，返回当前累计流量作为时间段流量
+    # 如果快照文件不存在，创建对应时间点的快照作为基准
     if [ ! -f "$snapshot_file" ]; then
-        echo "$current_input $current_output"
+        # 创建缺失的快照文件作为基准点
+        echo "{\"input\": $current_input, \"output\": $current_output, \"timestamp\": \"$(get_beijing_time -Iseconds)\"}" > "$snapshot_file"
+        # 返回0流量，因为刚创建基准点
+        echo "0 0"
         return
     fi
 
@@ -1300,13 +1303,23 @@ remove_nftables_rules() {
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
 
+    # 先检查是否存在计数器规则
+    if ! nft -a list table $family $table_name 2>/dev/null | grep -q "counter name \"port_${port}_"; then
+        return 0
+    fi
+
     nft -a list table $family $table_name 2>/dev/null | \
         grep -E "(tcp|udp) (dport|sport) $port.*counter name \"port_${port}_" | \
-        awk '{print $NF}' | \
+        sed -n 's/.*# handle \([0-9]\+\)$/\1/p' | \
         while read handle; do
             nft delete rule $family $table_name handle $handle 2>/dev/null || true
         done
 
+    # 重置计数器为0而不是删除，确保重新添加时从0开始
+    nft reset counter $family $table_name "port_${port}_in" 2>/dev/null || true
+    nft reset counter $family $table_name "port_${port}_out" 2>/dev/null || true
+
+    # 然后删除计数器对象
     nft delete counter $family $table_name "port_${port}_in" 2>/dev/null || true
     nft delete counter $family $table_name "port_${port}_out" 2>/dev/null || true
 }
@@ -1582,16 +1595,21 @@ apply_nftables_quota() {
     fi
 }
 
-# 删除nftables配额限制（保留流量统计）
+# 删除nftables配额限制
 remove_nftables_quota() {
     local port=$1
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
     local quota_name="port_${port}_quota"
 
+    # 先检查是否存在配额规则
+    if ! nft -a list table $family $table_name 2>/dev/null | grep -q "quota name \"$quota_name\""; then
+        return 0  # 没有配额规则，直接返回
+    fi
+
     nft -a list table $family $table_name 2>/dev/null | \
         grep -E "(tcp|udp) (dport|sport) $port.*quota name \"$quota_name\"" | \
-        awk '{print $NF}' | \
+        sed -n 's/.*# handle \([0-9]\+\)$/\1/p' | \
         while read handle; do
             nft delete rule $family $table_name handle $handle 2>/dev/null || true
         done
@@ -1671,6 +1689,11 @@ remove_tc_limit() {
     local port=$1
     local interface=$(get_default_interface)
     local class_id="1:$(printf '%x' $((0x1000 + port)))"
+
+    # 先检查是否存在TC规则
+    if ! tc class show dev $interface 2>/dev/null | grep -q "$class_id"; then
+        return 0  # 没有TC规则，直接返回
+    fi
 
     # 计算过滤器优先级
     local filter_prio=$((port % 1000 + 1))
@@ -1757,7 +1780,7 @@ show_port_historical_details() {
     local daily_output_formatted=$(format_bytes $daily_output)
     local daily_total_formatted=$(format_bytes $daily_total)
 
-    echo "本日流量情况(每日0点)"
+    echo "本日流量情况(昨日23:59起)"
     echo "🟢 上行(入站): $daily_input_formatted | 下行(出站): $daily_output_formatted | 总计流量: $daily_total_formatted"
     echo "────────────────────────────────────────────────────────"
 
@@ -2085,8 +2108,6 @@ auto_reset_port() {
 
     echo "端口 $port 自动重置完成"
 }
-
-
 
 # 重置端口nftables计数器
 reset_port_nftables_counters() {
@@ -2630,9 +2651,9 @@ setup_notification_cron() {
     local snapshot_enabled=$(jq -r '.notifications.telegram.snapshot_notifications.enabled' "$CONFIG_FILE")
     local status_enabled=$(jq -r '.notifications.telegram.status_notifications.enabled' "$CONFIG_FILE")
 
-    # 添加快照通知 - 固定每日0点5分发送（避免与快照创建冲突）
+    # 添加快照通知 - 固定每日23点55分发送（在新快照创建前获取完整数据）
     if [ "$snapshot_enabled" = "true" ]; then
-        echo "5 0 * * * $script_path --send-snapshot >/dev/null 2>&1  # 端口流量犬快照通知" >> "$temp_cron"
+        echo "55 23 * * * $script_path --send-snapshot >/dev/null 2>&1  # 端口流量犬快照通知" >> "$temp_cron"
     fi
 
     # 添加状态通知
@@ -2702,7 +2723,6 @@ remove_port_auto_reset_cron() {
     rm -f "$temp_cron"
 }
 
-
 # 格式化快照消息
 format_snapshot_message() {
     local timestamp=$(get_beijing_time '+%Y-%m-%d %H:%M:%S')
@@ -2758,11 +2778,11 @@ format_snapshot_message() {
 
         message+="$port_title
 <pre>
-本日流量情况(自每日0点起)
+本日流量情况(自昨日23:59起)
 🟢 上行(入站): $(format_bytes $daily_input) | 下行(出站): $(format_bytes $daily_output) | 总计流量: $(format_bytes $daily_total)
-本周流量情况(自周一0点起)
+本周流量情况(自上周日23:59起)
 🟢 上行(入站): $(format_bytes $weekly_input) | 下行(出站): $(format_bytes $weekly_output) | 总计流量: $(format_bytes $weekly_total)
-本月流量情况(自每月1日0点起)
+本月流量情况(自上月末23:59起)
 🟢 上行(入站): $(format_bytes $monthly_input) | 下行(出站): $(format_bytes $monthly_output) | 总计流量: $(format_bytes $monthly_total)
 </pre>
 

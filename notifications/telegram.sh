@@ -82,7 +82,7 @@ telegram_configure() {
             interval_display="每${status_interval}"
         fi
         echo -e "当前状态: ${config_status} | 状态通知: ${interval_display}"
-        echo "快照通知: 每日0点05分推送"
+        echo "快照通知: 每日23点55分推送"
         echo
         echo "1. 配置Bot信息 (Token + Chat ID + 服务器名称)"
         echo "2. 通知设置管理"
