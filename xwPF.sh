@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 脚本版本
-SCRIPT_VERSION="v2.0.0"
+SCRIPT_VERSION="v2.0.1"
 
 # 临时配置变量（仅在配置过程中使用）
 NAT_LISTEN_PORT=""
@@ -3286,6 +3286,9 @@ proxy_management_menu() {
                 echo -e "${GREEN}✓ 已开启全局Proxy Protocol${NC}"
             fi
 
+            # 重启realm服务使配置生效
+            restart_realm_service true
+
             read -p "按回车键继续..."
             continue
         fi
@@ -3347,9 +3350,6 @@ proxy_management_menu() {
         read -p "按回车键继续..."
     done
 }
-
-
-
 
 # 批量设置Proxy模式
 batch_set_proxy_mode() {
