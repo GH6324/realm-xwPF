@@ -234,9 +234,6 @@ EOF
     # 初始化nftables表
     init_nftables
 
-    # 初始化流量快照
-    init_traffic_snapshots
-
     # 设置快照定时任务
     setup_snapshot_cron
 }
@@ -253,54 +250,6 @@ init_nftables() {
     nft add chain $family $table_name forward { type filter hook forward priority 0\; } 2>/dev/null || true
 }
 
-# 初始化流量快照
-init_traffic_snapshots() {
-    local active_ports=($(get_active_ports))
-
-    # 无端口则跳过
-    if [ ${#active_ports[@]} -eq 0 ]; then
-        return
-    fi
-
-    # 创建端口快照
-    for port in "${active_ports[@]}"; do
-        local snapshot_file="$SNAPSHOT_DIR/port_${port}.json"
-
-        if [ ! -f "$snapshot_file" ]; then
-            # 创建快照文件
-            create_initial_snapshot "$port"
-        fi
-    done
-}
-
-# 创建初始快照文件
-create_initial_snapshot() {
-    local port=$1
-
-    # 获取当前流量数据作为基准
-    local traffic_data=($(get_port_traffic "$port"))
-    local input_bytes=${traffic_data[0]}
-    local output_bytes=${traffic_data[1]}
-
-    # 获取当前时间信息
-    local current_date=$(get_beijing_time +%Y-%m-%d)
-    local monday_date=$(get_beijing_time -d 'monday' +%Y-%m-%d)
-    local current_week=$(get_beijing_time -d "$monday_date" +%Y-W%V)
-    local current_month=$(get_beijing_time +%Y-%m)
-
-    # 创建分离的快照文件
-    # 日快照文件
-    local daily_file="$SNAPSHOT_DIR/port_${port}_daily_${current_date}.json"
-    echo "{\"input\": $input_bytes, \"output\": $output_bytes, \"timestamp\": \"$(get_beijing_time -Iseconds)\"}" > "$daily_file"
-
-    # 周快照文件
-    local weekly_file="$SNAPSHOT_DIR/port_${port}_weekly_${current_week}.json"
-    echo "{\"input\": $input_bytes, \"output\": $output_bytes, \"timestamp\": \"$(get_beijing_time -Iseconds)\"}" > "$weekly_file"
-
-    # 月快照文件
-    local monthly_file="$SNAPSHOT_DIR/port_${port}_monthly_${current_month}.json"
-    echo "{\"input\": $input_bytes, \"output\": $output_bytes, \"timestamp\": \"$(get_beijing_time -Iseconds)\"}" > "$monthly_file"
-}
 
 # 创建流量快照
 create_traffic_snapshot() {
@@ -380,9 +329,9 @@ get_period_traffic() {
     # 查找对应的快照文件
     local snapshot_file="$SNAPSHOT_DIR/port_${port}_${period}_${time_key}.json"
 
-    # 如果快照文件不存在，返回当前累计流量作为时间段流量
+    # 如果快照文件不存在，返回0流量（等待定时任务创建正式快照）
     if [ ! -f "$snapshot_file" ]; then
-        echo "$current_input $current_output"
+        echo "0 0"
         return
     fi
 
@@ -453,11 +402,8 @@ get_period_traffic_cached() {
     # 查找对应的快照文件
     local snapshot_file="$SNAPSHOT_DIR/port_${port}_${period}_${time_key}.json"
 
-    # 如果快照文件不存在，创建对应时间点的快照作为基准
+    # 如果快照文件不存在，返回0流量（等待定时任务创建正式快照）
     if [ ! -f "$snapshot_file" ]; then
-        # 创建缺失的快照文件作为基准点
-        echo "{\"input\": $current_input, \"output\": $current_output, \"timestamp\": \"$(get_beijing_time -Iseconds)\"}" > "$snapshot_file"
-        # 返回0流量，因为刚创建基准点
         echo "0 0"
         return
     fi
@@ -1772,8 +1718,8 @@ show_port_historical_details() {
 
     # 获取本日流量情况(每日0点)
     local daily_traffic=($(get_period_traffic "$port" "daily"))
-    local daily_input=${daily_traffic[0]}
-    local daily_output=${daily_traffic[1]}
+    local daily_input=${daily_traffic[0]:-0}
+    local daily_output=${daily_traffic[1]:-0}
     local daily_total=$(calculate_total_traffic "$daily_input" "$daily_output" "$billing_mode")
 
     local daily_input_formatted=$(format_bytes $daily_input)
@@ -1786,8 +1732,8 @@ show_port_historical_details() {
 
     # 获取本周流量情况(周一0点)
     local weekly_traffic=($(get_period_traffic "$port" "weekly"))
-    local weekly_input=${weekly_traffic[0]}
-    local weekly_output=${weekly_traffic[1]}
+    local weekly_input=${weekly_traffic[0]:-0}
+    local weekly_output=${weekly_traffic[1]:-0}
     local weekly_total=$(calculate_total_traffic "$weekly_input" "$weekly_output" "$billing_mode")
 
     local weekly_input_formatted=$(format_bytes $weekly_input)
@@ -1800,8 +1746,8 @@ show_port_historical_details() {
 
     # 获取本月流量情况(每月1日0点)
     local monthly_traffic=($(get_period_traffic "$port" "monthly"))
-    local monthly_input=${monthly_traffic[0]}
-    local monthly_output=${monthly_traffic[1]}
+    local monthly_input=${monthly_traffic[0]:-0}
+    local monthly_output=${monthly_traffic[1]:-0}
     local monthly_total=$(calculate_total_traffic "$monthly_input" "$monthly_output" "$billing_mode")
 
     local monthly_input_formatted=$(format_bytes $monthly_input)
@@ -1816,17 +1762,11 @@ show_port_historical_details() {
     view_traffic_statistics
 }
 
-# 端口流量排行
-view_traffic_ranking() {
-    echo -e "${BLUE}端口流量排行${NC}"
-    echo
-
+# 非交互式端口流量排行（供快照通知使用）
+get_traffic_ranking_data() {
     local active_ports=($(get_active_ports))
-
     if [ ${#active_ports[@]} -eq 0 ]; then
         echo "暂无监控端口"
-        sleep 2
-        view_traffic_statistics
         return
     fi
 
@@ -1834,20 +1774,30 @@ view_traffic_ranking() {
     local temp_file_double=$(mktemp)
     local temp_file_single=$(mktemp)
 
-    # 收集双向统计模式的端口数据
+    # 收集双向统计模式的端口数据（使用月流量数据）
     for port in "${active_ports[@]}"; do
-        local traffic_data=($(get_port_traffic "$port"))
-        local input_bytes=${traffic_data[0]}
-        local output_bytes=${traffic_data[1]}
         local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"single\"" "$CONFIG_FILE")
         local remark=$(jq -r ".ports.\"$port\".remark // \"\"" "$CONFIG_FILE")
 
+        # 获取月流量数据
+        local monthly_traffic=($(get_period_traffic "$port" "monthly"))
+        local monthly_input=${monthly_traffic[0]:-0}
+        local monthly_output=${monthly_traffic[1]:-0}
+
+        # 确保是数字
+        if ! [[ "$monthly_input" =~ ^[0-9]+$ ]]; then
+            monthly_input=0
+        fi
+        if ! [[ "$monthly_output" =~ ^[0-9]+$ ]]; then
+            monthly_output=0
+        fi
+
+        local monthly_total=$(calculate_total_traffic "$monthly_input" "$monthly_output" "$billing_mode")
+
         if [ "$billing_mode" = "double" ]; then
-            local total_bytes=$(calculate_total_traffic "$input_bytes" "$output_bytes" "double")
-            echo "$total_bytes $port $remark" >> "$temp_file_double"
+            echo "$monthly_total $port $remark" >> "$temp_file_double"
         else
-            local total_bytes=$(calculate_total_traffic "$input_bytes" "$output_bytes" "single")
-            echo "$total_bytes $port $remark" >> "$temp_file_single"
+            echo "$monthly_total $port $remark" >> "$temp_file_single"
         fi
     done
 
@@ -1870,7 +1820,6 @@ view_traffic_ranking() {
         echo "$rank. "
         rank=$((rank + 1))
     done
-    echo "...展示前五名"
 
     # 显示单向统计模式排行（前5名）
     echo "单向统计模式:"
@@ -1891,10 +1840,27 @@ view_traffic_ranking() {
         echo "$rank. "
         rank=$((rank + 1))
     done
-    echo "...展示前五名"
 
     # 清理临时文件
     rm -f "$temp_file_double" "$temp_file_single"
+}
+
+# 端口流量排行
+view_traffic_ranking() {
+    echo -e "${BLUE}端口流量排行${NC}"
+    echo
+
+    local active_ports=($(get_active_ports))
+
+    if [ ${#active_ports[@]} -eq 0 ]; then
+        echo "暂无监控端口"
+        sleep 2
+        view_traffic_statistics
+        return
+    fi
+
+    # 调用非交互式函数获取排行数据
+    get_traffic_ranking_data
 
     echo
     read -p "按回车键返回..."
@@ -2551,7 +2517,7 @@ uninstall_script() {
         # 删除nftables表
         local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE" 2>/dev/null || echo "port_traffic_monitor")
         local family=$(jq -r '.nftables.family' "$CONFIG_FILE" 2>/dev/null || echo "inet")
-        nft delete table $family $table_name 2>/dev/null || true
+        nft delete table $family $table_name >/dev/null 2>&1 || true
 
         # 删除定时任务
         remove_snapshot_cron 2>/dev/null || true
@@ -2610,6 +2576,7 @@ manage_telegram_notifications() {
     if [ -f "$telegram_script" ]; then
         source "$telegram_script"
         telegram_configure
+        manage_notifications
     else
         echo -e "${RED}Telegram 通知模块不存在${NC}"
         echo "请检查文件: $telegram_script"
@@ -2617,7 +2584,6 @@ manage_telegram_notifications() {
         manage_notifications
     fi
 }
-
 
 # API 接口函数 - 供通知模块调用
 
@@ -2745,6 +2711,9 @@ format_snapshot_message() {
         current_traffic_cache["$port"]="${traffic_data[0]} ${traffic_data[1]}"
     done
 
+    # 存储端口流量数据用于排行
+    declare -A port_monthly_data
+
     # 为每个端口生成详细报告
     for port in "${active_ports[@]}"; do
         # 获取端口配置
@@ -2776,6 +2745,9 @@ format_snapshot_message() {
         local monthly_output=${monthly_traffic[1]:-0}
         local monthly_total=$(calculate_total_traffic "$monthly_input" "$monthly_output" "$billing_mode")
 
+        # 存储月流量数据用于排行
+        port_monthly_data["$port"]="$monthly_total|$billing_mode"
+
         message+="$port_title
 <pre>
 本日流量情况(自昨日23:59起)
@@ -2789,71 +2761,11 @@ format_snapshot_message() {
 "
     done
 
-    # 端口流量排行
+    # 端口流量排行 - 使用非交互式函数
     message+="端口流量排行
 
 <pre>
-双向统计模式:"
-
-    # 双向统计端口排行
-    local double_ports=()
-    local single_ports=()
-
-    for port in "${active_ports[@]}"; do
-        local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"single\"" "$CONFIG_FILE")
-        # 从缓存获取当前流量，计算月流量数据进行排行
-        local current_traffic=(${current_traffic_cache["$port"]})
-        local current_input=${current_traffic[0]}
-        local current_output=${current_traffic[1]}
-        local monthly_traffic=($(get_period_traffic_cached "$port" "monthly" "$current_input" "$current_output"))
-        local monthly_input=${monthly_traffic[0]:-0}
-        local monthly_output=${monthly_traffic[1]:-0}
-        local monthly_total=$(calculate_total_traffic "$monthly_input" "$monthly_output" "$billing_mode")
-
-        if [ "$billing_mode" = "double" ]; then
-            double_ports+=("$monthly_total|$port")
-        else
-            # 只存储流量和端口号，标签在显示时重新获取
-            single_ports+=("$monthly_total|$port")
-        fi
-    done
-
-    # 排序并显示双向统计
-    local sorted_double=($(printf '%s\n' "${double_ports[@]}" | sort -nr -t'|' -k1 | head -5))
-    for i in {1..5}; do
-        if [ $((i-1)) -lt ${#sorted_double[@]} ]; then
-            local entry="${sorted_double[$((i-1))]}"
-            local total_bytes=$(echo "$entry" | cut -d'|' -f1)
-            local port_num=$(echo "$entry" | cut -d'|' -f2)
-            local formatted_total=$(format_bytes $total_bytes)
-            message+="
-${i}. 端口 ${port_num} 总计流量: ${formatted_total}"
-        else
-            message+="
-${i}. "
-        fi
-    done
-
-    message+="
-单向统计模式:"
-
-    local sorted_single=($(printf '%s\n' "${single_ports[@]}" | sort -nr -t'|' -k1 | head -5))
-    for i in {1..5}; do
-        if [ $((i-1)) -lt ${#sorted_single[@]} ]; then
-            local entry="${sorted_single[$((i-1))]}"
-            local total_bytes=$(echo "$entry" | cut -d'|' -f1)
-            local port_num=$(echo "$entry" | cut -d'|' -f2)
-            local formatted_total=$(format_bytes $total_bytes)
-            # 只显示端口号和流量
-            message+="
-${i}. 端口 ${port_num} 总计流量: ${formatted_total}"
-        else
-            message+="
-${i}. "
-        fi
-    done
-
-    message+="
+$(get_traffic_ranking_data)
 </pre>
 🔗 服务器: <i>${server_name}</i>"
 
