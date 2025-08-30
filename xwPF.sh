@@ -738,21 +738,23 @@ get_transport_config() {
             # WebSocket+TLS自签证书配置
             local ws_host_param="${server_name:-$DEFAULT_SNI_DOMAIN}"
             local ws_path_param="${ws_path:-/ws}"
+            local sni_name="${TLS_SERVER_NAME:-$DEFAULT_SNI_DOMAIN}"
             if [ "$role" = "1" ]; then
                 # 中转服务器(客户端): WebSocket+TLS自签
-                echo '"remote_transport": "ws;host='$ws_host_param';path='$ws_path_param';tls;sni='$TLS_SERVER_NAME';insecure"'
+                echo '"remote_transport": "ws;host='$ws_host_param';path='$ws_path_param';tls;sni='$sni_name';insecure"'
             elif [ "$role" = "2" ]; then
                 # 出口服务器(服务端): WebSocket+TLS自签
-                echo '"listen_transport": "ws;host='$ws_host_param';path='$ws_path_param';tls;servername='$TLS_SERVER_NAME'"'
+                echo '"listen_transport": "ws;host='$ws_host_param';path='$ws_path_param';tls;servername='$sni_name'"'
             fi
             ;;
         "ws_tls_ca")
             # WebSocket+TLS CA证书配置
             local ws_host_param="${server_name:-$DEFAULT_SNI_DOMAIN}"
             local ws_path_param="${ws_path:-/ws}"
+            local sni_name="${TLS_SERVER_NAME:-$DEFAULT_SNI_DOMAIN}"
             if [ "$role" = "1" ]; then
                 # 中转服务器(客户端): WebSocket+TLS CA证书
-                echo '"remote_transport": "ws;host='$ws_host_param';path='$ws_path_param';tls;sni='$TLS_SERVER_NAME'"'
+                echo '"remote_transport": "ws;host='$ws_host_param';path='$ws_path_param';tls;sni='$sni_name'"'
             elif [ "$role" = "2" ]; then
                 # 出口服务器(服务端): WebSocket+TLS CA证书
                 if [ -n "$cert_path" ] && [ -n "$key_path" ]; then
@@ -800,7 +802,7 @@ generate_forward_endpoints_config() {
     local listen_ip="::"
 
     # 获取传输配置（出口服务器角色=2）
-    local transport_config=$(get_transport_config "$SECURITY_LEVEL" "$WS_HOST" "$TLS_CERT_PATH" "$TLS_KEY_PATH" "2" "$WS_PATH")
+    local transport_config=$(get_transport_config "$SECURITY_LEVEL" "$TLS_SERVER_NAME" "$TLS_CERT_PATH" "$TLS_KEY_PATH" "2" "$WS_PATH")
     local transport_line=""
     if [ -n "$transport_config" ]; then
         transport_line=",
@@ -4322,7 +4324,7 @@ configure_nat_server() {
 
                 # WebSocket Host配置
                 echo ""
-                read -p "请输入WebSocket Host [默认: www.tesla.com]: " WS_HOST
+                read -p "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
                 if [ -z "$WS_HOST" ]; then
                     WS_HOST="$DEFAULT_SNI_DOMAIN"
                 fi
@@ -4343,7 +4345,7 @@ configure_nat_server() {
 
                 # TLS服务器名称配置
                 echo ""
-                read -p "请输入TLS服务器名称 (SNI) [默认www.tesla.com]: " TLS_SERVER_NAME
+                read -p "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
                 if [ -z "$TLS_SERVER_NAME" ]; then
                     TLS_SERVER_NAME="$DEFAULT_SNI_DOMAIN"
                 fi
@@ -4384,7 +4386,7 @@ configure_nat_server() {
 
                 # WebSocket Host配置
                 echo ""
-                read -p "请输入WebSocket Host [默认: www.tesla.com]: " WS_HOST
+                read -p "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
                 if [ -z "$WS_HOST" ]; then
                     WS_HOST="$DEFAULT_SNI_DOMAIN"
                 fi
@@ -4392,7 +4394,7 @@ configure_nat_server() {
 
                 # TLS服务器名称配置
                 echo ""
-                read -p "请输入TLS服务器名称 (SNI) [默认www.tesla.com]: " TLS_SERVER_NAME
+                read -p "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
                 if [ -z "$TLS_SERVER_NAME" ]; then
                     TLS_SERVER_NAME="$DEFAULT_SNI_DOMAIN"
                 fi
@@ -4412,7 +4414,7 @@ configure_nat_server() {
 
                 # WebSocket Host配置
                 echo ""
-                read -p "请输入WebSocket Host [默认: www.tesla.com]: " WS_HOST
+                read -p "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
                 if [ -z "$WS_HOST" ]; then
                     WS_HOST="$DEFAULT_SNI_DOMAIN"
                 fi
@@ -4651,7 +4653,7 @@ configure_exit_server() {
 
                 # WebSocket Host配置
                 echo ""
-                read -p "请输入WebSocket Host [默认: www.tesla.com]: " WS_HOST
+                read -p "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
                 if [ -z "$WS_HOST" ]; then
                     WS_HOST="$DEFAULT_SNI_DOMAIN"
                 fi
@@ -4672,7 +4674,7 @@ configure_exit_server() {
 
                 # TLS服务器名称配置
                 echo ""
-                read -p "请输入TLS服务器名称 (SNI) [默认www.tesla.com]: " TLS_SERVER_NAME
+                read -p "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
                 if [ -z "$TLS_SERVER_NAME" ]; then
                     TLS_SERVER_NAME="$DEFAULT_SNI_DOMAIN"
                 fi
@@ -4685,7 +4687,7 @@ configure_exit_server() {
 
                 # TLS服务器名称配置
                 echo ""
-                read -p "请输入TLS服务器名称 (SNI) [默认www.tesla.com]: " TLS_SERVER_NAME
+                read -p "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
                 if [ -z "$TLS_SERVER_NAME" ]; then
                     TLS_SERVER_NAME="$DEFAULT_SNI_DOMAIN"
                 fi
@@ -4726,7 +4728,7 @@ configure_exit_server() {
 
                 # WebSocket Host配置
                 echo ""
-                read -p "请输入WebSocket Host [默认: www.tesla.com]: " WS_HOST
+                read -p "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
                 if [ -z "$WS_HOST" ]; then
                     WS_HOST="$DEFAULT_SNI_DOMAIN"
                 fi
@@ -4734,7 +4736,7 @@ configure_exit_server() {
 
                 # TLS服务器名称配置
                 echo ""
-                read -p "请输入TLS服务器名称 (SNI) [默认www.tesla.com]: " TLS_SERVER_NAME
+                read -p "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
                 if [ -z "$TLS_SERVER_NAME" ]; then
                     TLS_SERVER_NAME="$DEFAULT_SNI_DOMAIN"
                 fi
@@ -4754,7 +4756,7 @@ configure_exit_server() {
 
                 # WebSocket Host配置
                 echo ""
-                read -p "请输入WebSocket Host [默认: www.tesla.com]: " WS_HOST
+                read -p "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
                 if [ -z "$WS_HOST" ]; then
                     WS_HOST="$DEFAULT_SNI_DOMAIN"
                 fi
@@ -5521,7 +5523,7 @@ generate_rule_endpoint_config() {
         fi
     fi
 
-    local transport_config=$(get_transport_config "$security_level" "$WS_HOST" "$tls_cert_path" "$tls_key_path" "$role" "$WS_PATH")
+    local transport_config=$(get_transport_config "$security_level" "$TLS_SERVER_NAME" "$tls_cert_path" "$tls_key_path" "$role" "$WS_PATH")
     if [ -n "$transport_config" ]; then
         endpoint_config="$endpoint_config,
             $transport_config"
@@ -5903,7 +5905,7 @@ generate_endpoints_from_rules() {
         fi
 
         # 添加传输配置 - 使用存储的规则角色信息
-        local transport_config=$(get_transport_config "$security_level" "$WS_HOST" "$tls_cert_path" "$tls_key_path" "$role" "$WS_PATH")
+        local transport_config=$(get_transport_config "$security_level" "$tls_server_name" "$tls_cert_path" "$tls_key_path" "$role" "$WS_PATH")
         if [ -n "$transport_config" ]; then
             endpoint_config="$endpoint_config,
             $transport_config"
@@ -6870,10 +6872,12 @@ get_security_display() {
             echo "TLS CA证书 (域名: $tls_server_name)"
             ;;
         "ws_tls_self")
-            echo "wss 自签证书 (host: $tls_server_name) (路径: $ws_path) (SNI: $TLS_SERVER_NAME)"
+            local display_sni="${TLS_SERVER_NAME:-$DEFAULT_SNI_DOMAIN}"
+            echo "wss 自签证书 (host: $tls_server_name) (路径: $ws_path) (SNI: $display_sni)"
             ;;
         "ws_tls_ca")
-            echo "wss CA证书 (host: $tls_server_name) (路径: $ws_path) (SNI: $TLS_SERVER_NAME)"
+            local display_sni="${TLS_SERVER_NAME:-$DEFAULT_SNI_DOMAIN}"
+            echo "wss CA证书 (host: $tls_server_name) (路径: $ws_path) (SNI: $display_sni)"
             ;;
         "ws_"*)
             echo "$security_level (路径: $ws_path)"
