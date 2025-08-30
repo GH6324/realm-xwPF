@@ -4,7 +4,7 @@
 
 ---
 
-> 🛜 **Network Forwarding Management Script** - Integrates all features of the latest official realm version, network connectivity testing, port traffic monitor, maintains minimalist essence, visual rule operations for improved efficiency, pure script-based complete relay ecosystem
+> 🚀 **Network Forwarding Management Script** - Integrates all features of the latest official realm version, network connectivity testing, port traffic monitor, maintains minimalist essence, visual rule operations for improved efficiency, pure script-based complete relay ecosystem
 
 ## 📸 Three Scripts Interface Preview 📸
 

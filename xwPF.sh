@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 脚本版本
-SCRIPT_VERSION="v2.0.1"
+SCRIPT_VERSION="v2.0.2"
 
 # 临时配置变量（仅在配置过程中使用）
 NAT_LISTEN_PORT=""
@@ -18,6 +18,7 @@ TLS_CERT_PATH=""   # TLS证书路径
 TLS_KEY_PATH=""    # TLS私钥路径
 TLS_SERVER_NAME="" # TLS服务器名称(SNI)
 WS_PATH=""         # WebSocket路径
+WS_HOST=""         # WebSocket主机名
 
 RULE_ID=""
 RULE_NAME=""
@@ -95,7 +96,7 @@ LOG_PATH="/var/log/realm.log"
 # 转发配置管理路径
 RULES_DIR="${CONFIG_DIR}/rules"
 
-# 默认tls域名（双端Realm架构需要相同SNI）
+# 默认tls和host域名（加密解密需要相同SNI）
 DEFAULT_SNI_DOMAIN="www.tesla.com"
 
 # 生成network配置
@@ -264,13 +265,7 @@ manage_dependencies() {
     [ "$mode" = "install" ] && echo ""
 }
 
-# 安装依赖工具（向后兼容）
-install_dependencies() {
-    echo -e "${YELLOW}正在检查必备依赖工具...${NC}"
-    manage_dependencies "install"
-}
-
-# 检查必备依赖工具（向后兼容）
+# 检查必备依赖工具
 check_dependencies() {
     manage_dependencies "check"
 }
@@ -321,6 +316,7 @@ TLS_CERT_PATH=$TLS_CERT_PATH
 TLS_KEY_PATH=$TLS_KEY_PATH
 TLS_SERVER_NAME=$TLS_SERVER_NAME
 WS_PATH=$WS_PATH
+WS_HOST=$WS_HOST
 EOF
 
     echo -e "${GREEN}✓ 状态文件已保存: $MANAGER_CONF${NC}"
@@ -543,6 +539,7 @@ TLS_SERVER_NAME="$TLS_SERVER_NAME"
 TLS_CERT_PATH="$TLS_CERT_PATH"
 TLS_KEY_PATH="$TLS_KEY_PATH"
 WS_PATH="$WS_PATH"
+WS_HOST="$WS_HOST"
 RULE_NOTE="$RULE_NOTE"
 ENABLED="true"
 CREATED_TIME="$(get_gmt8_time '+%Y-%m-%d %H:%M:%S')"
@@ -594,6 +591,7 @@ TLS_SERVER_NAME="$TLS_SERVER_NAME"
 TLS_CERT_PATH="$TLS_CERT_PATH"
 TLS_KEY_PATH="$TLS_KEY_PATH"
 WS_PATH="$WS_PATH"
+WS_HOST="$WS_HOST"
 RULE_NOTE="$RULE_NOTE"
 ENABLED="true"
 CREATED_TIME="$(get_gmt8_time '+%Y-%m-%d %H:%M:%S')"
@@ -701,12 +699,13 @@ get_transport_config() {
         "ws")
             # WebSocket配置
             local ws_path_param="${ws_path:-/ws}"
+            local ws_host_param="${server_name:-$DEFAULT_SNI_DOMAIN}"
             if [ "$role" = "1" ]; then
                 # 中转服务器(客户端): WebSocket连接
-                echo '"remote_transport": "ws;path='$ws_path_param'"'
+                echo '"remote_transport": "ws;host='$ws_host_param';path='$ws_path_param'"'
             elif [ "$role" = "2" ]; then
                 # 出口服务器(服务端): WebSocket监听
-                echo '"listen_transport": "ws;path='$ws_path_param'"'
+                echo '"listen_transport": "ws;host='$ws_host_param';path='$ws_path_param'"'
             fi
             ;;
         "tls_self")
@@ -737,27 +736,27 @@ get_transport_config() {
             ;;
         "ws_tls_self")
             # WebSocket+TLS自签证书配置
-            local sni_name="${server_name:-$DEFAULT_SNI_DOMAIN}"
+            local ws_host_param="${server_name:-$DEFAULT_SNI_DOMAIN}"
             local ws_path_param="${ws_path:-/ws}"
             if [ "$role" = "1" ]; then
                 # 中转服务器(客户端): WebSocket+TLS自签
-                echo '"remote_transport": "ws;host='$sni_name';path='$ws_path_param';tls;sni='$sni_name';insecure"'
+                echo '"remote_transport": "ws;host='$ws_host_param';path='$ws_path_param';tls;sni='$TLS_SERVER_NAME';insecure"'
             elif [ "$role" = "2" ]; then
                 # 出口服务器(服务端): WebSocket+TLS自签
-                echo '"listen_transport": "ws;host='$sni_name';path='$ws_path_param';tls;servername='$sni_name'"'
+                echo '"listen_transport": "ws;host='$ws_host_param';path='$ws_path_param';tls;servername='$TLS_SERVER_NAME'"'
             fi
             ;;
         "ws_tls_ca")
             # WebSocket+TLS CA证书配置
-            local sni_name="${server_name:-$DEFAULT_SNI_DOMAIN}"
+            local ws_host_param="${server_name:-$DEFAULT_SNI_DOMAIN}"
             local ws_path_param="${ws_path:-/ws}"
             if [ "$role" = "1" ]; then
                 # 中转服务器(客户端): WebSocket+TLS CA证书
-                echo '"remote_transport": "ws;host='$sni_name';path='$ws_path_param';tls;sni='$sni_name'"'
+                echo '"remote_transport": "ws;host='$ws_host_param';path='$ws_path_param';tls;sni='$TLS_SERVER_NAME'"'
             elif [ "$role" = "2" ]; then
                 # 出口服务器(服务端): WebSocket+TLS CA证书
                 if [ -n "$cert_path" ] && [ -n "$key_path" ]; then
-                    echo '"listen_transport": "ws;host='$sni_name';path='$ws_path_param';tls;cert='$cert_path';key='$key_path'"'
+                    echo '"listen_transport": "ws;host='$ws_host_param';path='$ws_path_param';tls;cert='$cert_path';key='$key_path'"'
                 else
                     echo ""
                 fi
@@ -801,7 +800,7 @@ generate_forward_endpoints_config() {
     local listen_ip="::"
 
     # 获取传输配置（出口服务器角色=2）
-    local transport_config=$(get_transport_config "$SECURITY_LEVEL" "$TLS_SERVER_NAME" "$TLS_CERT_PATH" "$TLS_KEY_PATH" "2" "$WS_PATH")
+    local transport_config=$(get_transport_config "$SECURITY_LEVEL" "$WS_HOST" "$TLS_CERT_PATH" "$TLS_KEY_PATH" "2" "$WS_PATH")
     local transport_line=""
     if [ -n "$transport_config" ]; then
         transport_line=",
@@ -1252,11 +1251,6 @@ get_rule_id_by_index() {
     return 1
 }
 
-# 获取规则总数（保持向后兼容）
-get_rules_count() {
-    get_active_rules_count
-}
-
 # 列出所有规则（详细信息，用于查看）
 list_all_rules() {
     echo -e "${YELLOW}=== 所有转发规则 ===${NC}"
@@ -1281,7 +1275,7 @@ list_all_rules() {
 
                 echo -e "ID ${BLUE}$RULE_ID${NC}: $RULE_NAME"
                 # 构建安全级别显示
-                local security_display=$(get_security_display "$SECURITY_LEVEL" "$WS_PATH" "$TLS_SERVER_NAME")
+                local security_display=$(get_security_display "$SECURITY_LEVEL" "$WS_PATH" "$WS_HOST")
                 local note_display=""
                 if [ -n "$RULE_NOTE" ]; then
                     note_display=" | 备注: ${GREEN}$RULE_NOTE${NC}"
@@ -1316,7 +1310,7 @@ interactive_add_rule() {
     echo "请选择新配置的角色:"
     echo -e "${GREEN}[1]${NC} 中转服务器"
     echo -e "${GREEN}[2]${NC} 服务端(落地)服务器 (双端Realm架构)"
-    echo "双端Realm架构解密用于：隧道,MPTCP，Proxy Protocol"
+    echo "双端架构用于一方加密一方解密：隧道,MPTCP，Proxy Protocol等"
     echo ""
     local RULE_ROLE
     while true; do
@@ -1945,7 +1939,7 @@ rules_management_menu() {
                             fi
                             relay_count=$((relay_count + 1))
                             # 显示详细的转发配置信息
-                            local security_display=$(get_security_display "$SECURITY_LEVEL" "$WS_PATH" "$TLS_SERVER_NAME")
+                            local security_display=$(get_security_display "$SECURITY_LEVEL" "$WS_PATH" "$WS_HOST")
                             local display_target=$(smart_display_target "$REMOTE_HOST")
                             local rule_display_name="$RULE_NAME"
                             local display_ip="${NAT_LISTEN_IP:-::}"
@@ -1977,7 +1971,7 @@ rules_management_menu() {
                             fi
                             exit_count=$((exit_count + 1))
                             # 显示详细的转发配置信息
-                            local security_display=$(get_security_display "$SECURITY_LEVEL" "$WS_PATH" "$TLS_SERVER_NAME")
+                            local security_display=$(get_security_display "$SECURITY_LEVEL" "$WS_PATH" "$WS_HOST")
                             # 落地服务器使用FORWARD_TARGET而不是REMOTE_HOST
                             local target_host="${FORWARD_TARGET%:*}"
                             local target_port="${FORWARD_TARGET##*:}"
@@ -3218,14 +3212,14 @@ get_proxy_mode_color() {
     esac
 }
 
-# 初始化所有规则文件的Proxy字段（确保向后兼容）
+# 初始化所有规则文件的Proxy字段
 init_proxy_fields() {
     init_rule_field "PROXY_MODE" "off"
 }
 
 # Proxy管理主菜单
 proxy_management_menu() {
-    # 初始化Proxy字段（确保向后兼容）
+    # 初始化Proxy字段
     init_proxy_fields
 
     while true; do
@@ -4177,6 +4171,7 @@ configure_nat_server() {
                     TLS_CERT_PATH="${TLS_CERT_PATH}"
                     TLS_KEY_PATH="${TLS_KEY_PATH}"
                     WS_PATH="${WS_PATH}"
+                    WS_HOST="${WS_HOST}"
                     RULE_NOTE="${RULE_NOTE:-}"  # 复用现有备注
                     echo -e "${GREEN}已读取端口 $NAT_LISTEN_PORT 的现有配置${NC}"
                     break
@@ -4206,7 +4201,6 @@ configure_nat_server() {
                     break
                 else
                     echo -e "${RED}无效IP地址格式${NC}"
-                    echo -e "${YELLOW}支持格式: 有效的IPv4或IPv6地址${NC}"
                     echo -e "${YELLOW}示例: 192.168.1.100 或 2001:db8::1 或 0.0.0.0 或 ::${NC}"
                 fi
             fi
@@ -4230,7 +4224,6 @@ configure_nat_server() {
                     break
                 else
                     echo -e "${RED}无效IP地址格式${NC}"
-                    echo -e "${YELLOW}支持格式: 有效的IPv4或IPv6地址${NC}"
                     echo -e "${YELLOW}示例: 192.168.1.100 或 2001:db8::1 或 0.0.0.0 或 ::${NC}"
                 fi
             fi
@@ -4327,6 +4320,14 @@ configure_nat_server() {
                 SECURITY_LEVEL="ws"
                 echo -e "${GREEN}已选择: WebSocket${NC}"
 
+                # WebSocket Host配置
+                echo ""
+                read -p "请输入WebSocket Host [默认: www.tesla.com]: " WS_HOST
+                if [ -z "$WS_HOST" ]; then
+                    WS_HOST="$DEFAULT_SNI_DOMAIN"
+                fi
+                echo -e "${GREEN}WebSocket Host设置为: $WS_HOST${NC}"
+
                 # WebSocket路径配置
                 echo ""
                 read -p "请输入WebSocket路径 [默认: /ws]: " WS_PATH
@@ -4381,6 +4382,14 @@ configure_nat_server() {
                 SECURITY_LEVEL="ws_tls_self"
                 echo -e "${GREEN}已选择: TLS+WebSocket自签证书${NC}"
 
+                # WebSocket Host配置
+                echo ""
+                read -p "请输入WebSocket Host [默认: www.tesla.com]: " WS_HOST
+                if [ -z "$WS_HOST" ]; then
+                    WS_HOST="$DEFAULT_SNI_DOMAIN"
+                fi
+                echo -e "${GREEN}WebSocket Host设置为: $WS_HOST${NC}"
+
                 # TLS服务器名称配置
                 echo ""
                 read -p "请输入TLS服务器名称 (SNI) [默认www.tesla.com]: " TLS_SERVER_NAME
@@ -4400,6 +4409,14 @@ configure_nat_server() {
             6)
                 SECURITY_LEVEL="ws_tls_ca"
                 echo -e "${GREEN}已选择: TLS+WebSocket CA证书${NC}"
+
+                # WebSocket Host配置
+                echo ""
+                read -p "请输入WebSocket Host [默认: www.tesla.com]: " WS_HOST
+                if [ -z "$WS_HOST" ]; then
+                    WS_HOST="$DEFAULT_SNI_DOMAIN"
+                fi
+                echo -e "${GREEN}WebSocket Host设置为: $WS_HOST${NC}"
 
                 # 证书路径配置
                 echo ""
@@ -4517,8 +4534,7 @@ configure_exit_server() {
     # 配置转发目标
     echo "配置本地转发目标 (设置好用于业务的本地软件和服务):"
     echo ""
-    echo -e "${YELLOW}双端Realm架构${NC}"
-    echo -e "${YELLOW}ipv4输入127.0.0.1,IPv6输入: ::1${NC}"
+    echo -e "${YELLOW}IPv4: 127.0.0.1 | IPv6: ::1 | 双栈: localhost${NC}"
     echo ""
 
     # 转发目标地址配置
@@ -4531,11 +4547,6 @@ configure_exit_server() {
         if validate_target_address "$input_target"; then
             FORWARD_TARGET="$input_target"
             echo -e "${GREEN}转发目标设置为: $FORWARD_TARGET${NC}"
-
-            # 如果是多地址，给出提示
-            if [[ "$FORWARD_TARGET" == *","* ]]; then
-                echo -e "${BLUE}提示: 检测到多个地址，将支持IPv4/IPv6双栈转发${NC}"
-            fi
             break
         else
             echo -e "${RED}无效地址格式${NC}"
@@ -4638,6 +4649,14 @@ configure_exit_server() {
                 SECURITY_LEVEL="ws"
                 echo -e "${GREEN}已选择: WebSocket${NC}"
 
+                # WebSocket Host配置
+                echo ""
+                read -p "请输入WebSocket Host [默认: www.tesla.com]: " WS_HOST
+                if [ -z "$WS_HOST" ]; then
+                    WS_HOST="$DEFAULT_SNI_DOMAIN"
+                fi
+                echo -e "${GREEN}WebSocket Host设置为: $WS_HOST${NC}"
+
                 # WebSocket路径配置
                 echo ""
                 read -p "请输入WebSocket路径 [默认: /ws]: " WS_PATH
@@ -4705,6 +4724,14 @@ configure_exit_server() {
                 SECURITY_LEVEL="ws_tls_self"
                 echo -e "${GREEN}已选择: TLS+WebSocket自签证书${NC}"
 
+                # WebSocket Host配置
+                echo ""
+                read -p "请输入WebSocket Host [默认: www.tesla.com]: " WS_HOST
+                if [ -z "$WS_HOST" ]; then
+                    WS_HOST="$DEFAULT_SNI_DOMAIN"
+                fi
+                echo -e "${GREEN}WebSocket Host设置为: $WS_HOST${NC}"
+
                 # TLS服务器名称配置
                 echo ""
                 read -p "请输入TLS服务器名称 (SNI) [默认www.tesla.com]: " TLS_SERVER_NAME
@@ -4724,6 +4751,14 @@ configure_exit_server() {
             6)
                 SECURITY_LEVEL="ws_tls_ca"
                 echo -e "${GREEN}已选择: TLS+WebSocket CA证书${NC}"
+
+                # WebSocket Host配置
+                echo ""
+                read -p "请输入WebSocket Host [默认: www.tesla.com]: " WS_HOST
+                if [ -z "$WS_HOST" ]; then
+                    WS_HOST="$DEFAULT_SNI_DOMAIN"
+                fi
+                echo -e "${GREEN}WebSocket Host设置为: $WS_HOST${NC}"
 
                 # 证书路径配置
                 echo ""
@@ -5128,28 +5163,6 @@ download_from_sources() {
     return 1
 }
 
-# 多源下载策略（保持向后兼容）
-download_with_fallback() {
-    local base_url="$1"
-    local filename="$2"
-
-    # 确定工作目录
-    local work_dir=$(get_work_dir)
-    if [ "$work_dir" = "." ]; then
-        work_dir="$(pwd)"
-    fi
-
-    local file_path="${work_dir}/${filename}"
-
-    # 使用统一的多源下载函数
-    if download_from_sources "$base_url" "$file_path"; then
-        echo "$file_path"  # 返回文件路径
-        return 0
-    else
-        return 1
-    fi
-}
-
 # 下载函数
 reliable_download() {
     local url="$1"
@@ -5376,8 +5389,15 @@ install_realm() {
 
     # 使用多源下载策略
     local download_file=""
-    if download_file=$(download_with_fallback "$DOWNLOAD_URL" "realm.tar.gz"); then
-        echo -e "${GREEN}✓ 下载成功: ${download_file}${NC}"
+    local work_dir=$(get_work_dir)
+    if [ "$work_dir" = "." ]; then
+        work_dir="$(pwd)"
+    fi
+    local file_path="${work_dir}/realm.tar.gz"
+
+    if download_from_sources "$DOWNLOAD_URL" "$file_path"; then
+        echo -e "${GREEN}✓ 下载成功: ${file_path}${NC}"
+        download_file="$file_path"
     else
         echo -e "${RED}✗ 下载失败${NC}"
         exit 1
@@ -5501,7 +5521,7 @@ generate_rule_endpoint_config() {
         fi
     fi
 
-    local transport_config=$(get_transport_config "$security_level" "$tls_server_name" "$tls_cert_path" "$tls_key_path" "$role" "$WS_PATH")
+    local transport_config=$(get_transport_config "$security_level" "$WS_HOST" "$tls_cert_path" "$tls_key_path" "$role" "$WS_PATH")
     if [ -n "$transport_config" ]; then
         endpoint_config="$endpoint_config,
             $transport_config"
@@ -5883,7 +5903,7 @@ generate_endpoints_from_rules() {
         fi
 
         # 添加传输配置 - 使用存储的规则角色信息
-        local transport_config=$(get_transport_config "$security_level" "$tls_server_name" "$tls_cert_path" "$tls_key_path" "$role" "$WS_PATH")
+        local transport_config=$(get_transport_config "$security_level" "$WS_HOST" "$tls_cert_path" "$tls_key_path" "$role" "$WS_PATH")
         if [ -n "$transport_config" ]; then
             endpoint_config="$endpoint_config,
             $transport_config"
@@ -6264,7 +6284,7 @@ smart_install() {
     echo ""
 
     # 步骤2: 安装依赖
-    install_dependencies
+    manage_dependencies "install"
 
     # 步骤3: 自安装脚本
     if ! self_install; then
@@ -6401,7 +6421,7 @@ service_status() {
                         echo -e "  ${GREEN}$RULE_NAME${NC}: ${LISTEN_IP:-$display_ip}:$LISTEN_PORT → $through_display → $display_target:$REMOTE_PORT"
                     fi
                     # 构建安全级别显示
-                    local security_display=$(get_security_display "$SECURITY_LEVEL" "$WS_PATH" "$TLS_SERVER_NAME")
+                    local security_display=$(get_security_display "$SECURITY_LEVEL" "$WS_PATH" "$WS_HOST")
                     local note_display=""
                     if [ -n "$RULE_NOTE" ]; then
                         note_display=" | 备注: ${GREEN}$RULE_NOTE${NC}"
@@ -6483,7 +6503,7 @@ uninstall_realm_stage_one() {
     stop_health_check_service
     pgrep "realm" >/dev/null 2>&1 && { pkill -f "realm"; sleep 2; pkill -9 -f "realm" 2>/dev/null; }
 
-    # 清理文件 - 使用通用清理函数
+    # 清理文件
     cleanup_files_by_paths "$REALM_PATH" "$CONFIG_DIR" "$SYSTEMD_PATH" "$LOG_PATH" "/etc/realm"
     cleanup_files_by_pattern "realm" "/var/log /tmp /var/tmp"
 
@@ -6531,56 +6551,6 @@ cleanup_files_by_pattern() {
     wait
 }
 
-# 批量清理日志文件
-cleanup_log_files() {
-    local pattern="$1"
-    local search_dirs="${2:-/var/log /tmp /root /home /usr/local/var/log /opt}"
-
-    IFS=' ' read -ra dirs_array <<< "$search_dirs"
-    for log_dir in "${dirs_array[@]}"; do
-        if [ -d "$log_dir" ]; then
-            find "$log_dir" -name "*${pattern}*" -type f 2>/dev/null | while read -r file; do
-                if [ -f "$file" ]; then
-                    echo -e "${YELLOW}发现 ${pattern} 日志文件: $file${NC}"
-                    rm -f "$file" && echo -e "${GREEN}✓${NC} 已删除日志文件: $file"
-                fi
-            done &
-        fi
-    done
-    wait  # 等待所有并行搜索完成
-}
-
-# 统一的临时文件清理函数
-cleanup_temp_files_by_pattern() {
-    local pattern="$1"
-    local search_dirs="${2:-/tmp /var/tmp /root /home /usr/local/tmp}"
-    local exclude_paths="${3:-/realm/config /realm/rules}"  # 排除重要配置路径
-
-    IFS=' ' read -ra dirs_array <<< "$search_dirs"
-    for tmp_dir in "${dirs_array[@]}"; do
-        if [ -d "$tmp_dir" ]; then
-            find "$tmp_dir" -name "*${pattern}*" -type f 2>/dev/null | while read -r file; do
-                if [ -f "$file" ]; then
-                    # 检查是否在排除路径中
-                    local should_exclude=false
-                    IFS=' ' read -ra exclude_array <<< "$exclude_paths"
-                    for exclude_path in "${exclude_array[@]}"; do
-                        if [[ "$file" == *"$exclude_path"* ]]; then
-                            should_exclude=true
-                            break
-                        fi
-                    done
-
-                    if [ "$should_exclude" = false ]; then
-                        echo -e "${YELLOW}发现 ${pattern} 临时文件: $file${NC}"
-                        rm -f "$file" && echo -e "${GREEN}✓${NC} 已删除临时文件: $file"
-                    fi
-                fi
-            done &
-        fi
-    done
-    wait  # 等待所有并行搜索完成
-}
 
 # 查看当前配置
 show_config() {
@@ -6648,7 +6618,7 @@ show_config() {
                             local through_display="${THROUGH_IP:-::}"
                             echo -e "    中转: ${LISTEN_IP:-$display_ip}:$LISTEN_PORT → $through_display → $display_target:$REMOTE_PORT"
                         fi
-                        local security_display=$(get_security_display "$SECURITY_LEVEL" "$WS_PATH" "$TLS_SERVER_NAME")
+                        local security_display=$(get_security_display "$SECURITY_LEVEL" "$WS_PATH" "$WS_HOST")
                         local note_display=""
                         if [ -n "$RULE_NOTE" ]; then
                             note_display=" | 备注: ${GREEN}$RULE_NOTE${NC}"
@@ -6797,7 +6767,7 @@ show_brief_status() {
                         fi
                         relay_count=$((relay_count + 1))
                         # 显示详细的转发配置信息
-                        local security_display=$(get_security_display "$SECURITY_LEVEL" "$WS_PATH" "$TLS_SERVER_NAME")
+                        local security_display=$(get_security_display "$SECURITY_LEVEL" "$WS_PATH" "$WS_HOST")
                         local display_target=$(smart_display_target "$REMOTE_HOST")
                         local rule_display_name="$RULE_NAME"
                         local display_ip="${NAT_LISTEN_IP:-::}"
@@ -6829,7 +6799,7 @@ show_brief_status() {
                         fi
                         exit_count=$((exit_count + 1))
                         # 显示详细的转发配置信息
-                        local security_display=$(get_security_display "$SECURITY_LEVEL" "$WS_PATH" "$TLS_SERVER_NAME")
+                        local security_display=$(get_security_display "$SECURITY_LEVEL" "$WS_PATH" "$WS_HOST")
                         # 落地服务器使用FORWARD_TARGET而不是REMOTE_HOST
                         local target_host="${FORWARD_TARGET%:*}"
                         local target_port="${FORWARD_TARGET##*:}"
@@ -6890,7 +6860,7 @@ get_security_display() {
             echo "默认传输"
             ;;
         "ws")
-            echo "WebSocket (路径: $ws_path)"
+            echo "ws (host: $tls_server_name) (路径: $ws_path)"
             ;;
         "tls_self")
             local display_sni="${tls_server_name:-$DEFAULT_SNI_DOMAIN}"
@@ -6900,11 +6870,10 @@ get_security_display() {
             echo "TLS CA证书 (域名: $tls_server_name)"
             ;;
         "ws_tls_self")
-            local display_sni="${tls_server_name:-$DEFAULT_SNI_DOMAIN}"
-            echo "tls 自签证书+ws (SNI: $display_sni) (路径: $ws_path)"
+            echo "wss 自签证书 (host: $tls_server_name) (路径: $ws_path) (SNI: $TLS_SERVER_NAME)"
             ;;
         "ws_tls_ca")
-            echo "tls CA证书+ws (域名: $tls_server_name) (路径: $ws_path)"
+            echo "wss CA证书 (host: $tls_server_name) (路径: $ws_path) (SNI: $TLS_SERVER_NAME)"
             ;;
         "ws_"*)
             echo "$security_level (路径: $ws_path)"
@@ -7354,60 +7323,7 @@ create_config_monitor_service() {
 MONITOR_FILE="/tmp/realm_config_update_needed"
 CONFIG_FILE="/etc/realm/config.json"
 
-# 查找主脚本 - 统一的多线程搜索逻辑
-find_main_script() {
-    local cache_file="/tmp/realm_path_cache"
 
-    # 第一阶段：检查缓存
-    if [ -f "$cache_file" ]; then
-        cached_path=$(cat "$cache_file" 2>/dev/null)
-        if [ -f "$cached_path" ]; then
-            echo "$cached_path"
-            return 0
-        fi
-    fi
-
-    # 第二阶段：常见位置直接检查
-    local common_paths=(
-        "/usr/local/bin/pf"
-        "/usr/local/bin/xwPF.sh"
-        "/root/xwPF.sh"
-        "/opt/xwPF.sh"
-        "/usr/bin/xwPF.sh"
-        "/usr/sbin/xwPF.sh"
-    )
-
-    for path in "${common_paths[@]}"; do
-        if [ -f "$path" ]; then
-            echo "$path" > "$cache_file"
-            echo "$path"
-            return 0
-        fi
-    done
-
-    # 第三阶段：分区域限制深度搜索
-    local search_dirs=("/etc" "/var" "/opt" "/usr" "/home" "/root")
-    for dir in "${search_dirs[@]}"; do
-        if [ -d "$dir" ]; then
-            local found_path=$(timeout 30 find "$dir" -maxdepth 4 -name "xwPF.sh" -type f 2>/dev/null | head -1)
-            if [ -n "$found_path" ] && [ -f "$found_path" ]; then
-                echo "$found_path" > "$cache_file"
-                echo "$found_path"
-                return 0
-            fi
-        fi
-    done
-
-    # 第四阶段：全系统搜索
-    local found_path=$(timeout 60 find / -name "xwPF.sh" -type f 2>/dev/null | head -1)
-    if [ -n "$found_path" ] && [ -f "$found_path" ]; then
-        echo "$found_path" > "$cache_file"
-        echo "$found_path"
-        return 0
-    fi
-
-    return 1
-}
 
 # 主循环
 while true; do
@@ -7419,7 +7335,36 @@ while true; do
                 echo "$(date '+%Y-%m-%d %H:%M:%S') [MONITOR] 检测到配置更新请求"
 
                 # 查找主脚本
-                script_path=$(find_main_script)
+                script_path=""
+                cache_file="/tmp/realm_path_cache"
+
+                # 检查缓存
+                if [ -f "$cache_file" ]; then
+                    cached_path=$(cat "$cache_file" 2>/dev/null)
+                    if [ -f "$cached_path" ]; then
+                        script_path="$cached_path"
+                    fi
+                fi
+
+                # 常见位置检查
+                if [ -z "$script_path" ]; then
+                    common_paths=(
+                        "/usr/local/bin/pf"
+                        "/usr/local/bin/xwPF.sh"
+                        "/root/xwPF.sh"
+                        "/opt/xwPF.sh"
+                        "/usr/bin/xwPF.sh"
+                        "/usr/sbin/xwPF.sh"
+                    )
+
+                    for path in "${common_paths[@]}"; do
+                        if [ -f "$path" ]; then
+                            echo "$path" > "$cache_file"
+                            script_path="$path"
+                            break
+                        fi
+                    done
+                fi
 
                 if [ -n "$script_path" ] && [ -f "$script_path" ]; then
                     echo "$(date '+%Y-%m-%d %H:%M:%S') [MONITOR] 正在重新生成配置..."
@@ -7453,7 +7398,36 @@ while true; do
             echo "$(date '+%Y-%m-%d %H:%M:%S') [MONITOR] 检测到配置更新请求"
 
             # 查找主脚本
-            script_path=$(find_main_script)
+            script_path=""
+            cache_file="/tmp/realm_path_cache"
+
+            # 检查缓存
+            if [ -f "$cache_file" ]; then
+                cached_path=$(cat "$cache_file" 2>/dev/null)
+                if [ -f "$cached_path" ]; then
+                    script_path="$cached_path"
+                fi
+            fi
+
+            # 常见位置检查
+            if [ -z "$script_path" ]; then
+                common_paths=(
+                    "/usr/local/bin/pf"
+                    "/usr/local/bin/xwPF.sh"
+                    "/root/xwPF.sh"
+                    "/opt/xwPF.sh"
+                    "/usr/bin/xwPF.sh"
+                    "/usr/sbin/xwPF.sh"
+                )
+
+                for path in "${common_paths[@]}"; do
+                    if [ -f "$path" ]; then
+                        echo "$path" > "$cache_file"
+                        script_path="$path"
+                        break
+                    fi
+                done
+            fi
 
             if [ -n "$script_path" ] && [ -f "$script_path" ]; then
                 echo "$(date '+%Y-%m-%d %H:%M:%S') [MONITOR] 正在重新生成配置..."
@@ -7570,7 +7544,7 @@ read_rule_file_for_health_check() {
     # 清空变量
     unset RULE_ID RULE_NAME RULE_ROLE LISTEN_PORT LISTEN_IP THROUGH_IP REMOTE_HOST REMOTE_PORT
     unset FORWARD_TARGET SECURITY_LEVEL
-    unset TLS_SERVER_NAME TLS_CERT_PATH TLS_KEY_PATH WS_PATH
+    unset TLS_SERVER_NAME TLS_CERT_PATH TLS_KEY_PATH WS_PATH WS_HOST
     unset ENABLED BALANCE_MODE FAILOVER_ENABLED HEALTH_CHECK_INTERVAL
     unset FAILURE_THRESHOLD SUCCESS_THRESHOLD CONNECTION_TIMEOUT
     unset TARGET_STATES WEIGHTS CREATED_TIME
