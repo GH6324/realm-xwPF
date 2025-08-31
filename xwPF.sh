@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 脚本版本
-SCRIPT_VERSION="v2.0.2"
+SCRIPT_VERSION="v2.0.3"
 
 # 临时配置变量（仅在配置过程中使用）
 NAT_LISTEN_PORT=""
@@ -770,31 +770,6 @@ get_transport_config() {
     esac
 }
 
-# 内置日志管理函数（控制日志大小）
-manage_log_size() {
-    local log_file="$1"
-    local max_size_mb="${2:-10}"  # 默认10MB限制
-    local keep_size_mb="${3:-5}"   # 保留最后5MB
-
-    # 安全检查：确保文件存在且可写
-    if [ -f "$log_file" ] && [ -w "$log_file" ]; then
-        local file_size=$(stat -f%z "$log_file" 2>/dev/null || stat -c%s "$log_file" 2>/dev/null || echo 0)
-        local max_bytes=$((max_size_mb * 1024 * 1024))
-        local keep_bytes=$((keep_size_mb * 1024 * 1024))
-
-        if [ "$file_size" -gt "$max_bytes" ]; then
-            # 安全截断：先备份再操作，失败时恢复
-            if cp "$log_file" "${log_file}.backup" 2>/dev/null; then
-                if tail -c "$keep_bytes" "$log_file" > "${log_file}.tmp" 2>/dev/null && mv "${log_file}.tmp" "$log_file" 2>/dev/null; then
-                    rm -f "${log_file}.backup" 2>/dev/null
-                else
-                    # 操作失败，恢复备份
-                    mv "${log_file}.backup" "$log_file" 2>/dev/null
-                fi
-            fi
-        fi
-    fi
-}
 
 # 生成转发endpoints配置
 generate_forward_endpoints_config() {
@@ -6061,12 +6036,9 @@ generate_endpoints_from_rules() {
 generate_realm_config() {
     echo -e "${YELLOW}正在生成 Realm 配置文件...${NC}"
 
-    # 创建配置目录和日志文件（内置日志管理）
+    # 创建配置目录和日志文件
     mkdir -p "$CONFIG_DIR"
     mkdir -p "$(dirname "$LOG_PATH")"
-
-    # 内置日志管理：创建前先清理过大的日志文件
-    manage_log_size "$LOG_PATH" 50 25
     touch "$LOG_PATH" && chmod 644 "$LOG_PATH"
 
     # 初始化规则目录
@@ -6131,14 +6103,9 @@ generate_realm_config() {
     done
 }
 
-# 生成 systemd 服务文件 - （内置日志管理）
+# 生成 systemd 服务文件
 generate_systemd_service() {
     echo -e "${YELLOW}正在生成 systemd 服务文件...${NC}"
-
-    # 内置日志管理：启动前清理过大的日志文件
-    manage_log_size "$LOG_PATH" 50 25
-
-    # 直接生成systemd服务文件 - 使用启动参数和日志限制
     cat > "$SYSTEMD_PATH" <<EOF
 [Unit]
 Description=Realm TCP Relay Service
@@ -6164,9 +6131,9 @@ LimitNPROC=1048576
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=${CONFIG_DIR} /var/log
+ReadWritePaths=${CONFIG_DIR}
 
-# 内置日志限制（防止journal过大）
+# 日志管理（使用systemd journal）
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=realm
@@ -6508,6 +6475,12 @@ uninstall_realm_stage_one() {
     # 清理文件
     cleanup_files_by_paths "$REALM_PATH" "$CONFIG_DIR" "$SYSTEMD_PATH" "$LOG_PATH" "/etc/realm"
     cleanup_files_by_pattern "realm" "/var/log /tmp /var/tmp"
+
+    # 清理独立清理定时器
+    systemctl stop realm-cleanup.timer >/dev/null 2>&1
+    systemctl disable realm-cleanup.timer >/dev/null 2>&1
+    rm -f "/etc/systemd/system/realm-cleanup.timer"
+    rm -f "/etc/systemd/system/realm-cleanup.service"
 
     # 清理系统配置
     [ -f "/etc/sysctl.d/90-enable-MPTCP.conf" ] && rm -f "/etc/sysctl.d/90-enable-MPTCP.conf"
@@ -7050,39 +7023,43 @@ show_menu() {
     done
 }
 
+# 统一文件大小清理函数
+cleanup_file_by_size() {
+    local file="$1"
+    local max_mb="${2:-10}"
+    local keep_mb="${3:-5}"
+
+    [ ! -f "$file" ] && return
+    local size=$(stat -c%s "$file" 2>/dev/null || echo 0)
+    [ "$size" -le $((max_mb * 1024 * 1024)) ] && return
+
+    tail -c $((keep_mb * 1024 * 1024)) "$file" > "$file.tmp" && mv "$file.tmp" "$file" 2>/dev/null
+}
+
 # 内置清理机制
 cleanup_temp_files() {
-    # 清理过期的路径缓存（超过24小时）
-    local cache_file="/tmp/realm_path_cache"
-    if [ -f "$cache_file" ]; then
-        local cache_age=$(( $(date +%s) - $(stat -f%m "$cache_file" 2>/dev/null || stat -c%Y "$cache_file" 2>/dev/null || echo 0) ))
-        if [ "$cache_age" -gt 604800 ]; then  # 7天
-            rm -f "$cache_file"
-        fi
-    fi
+    # 统一按大小清理所有文件（10MB清理，保留5MB）
+    cleanup_file_by_size "$LOG_PATH" 10 5
+    cleanup_file_by_size "/etc/realm/health/health_status.conf" 10 5
+    cleanup_file_by_size "/tmp/realm_path_cache" 10 5
+    cleanup_file_by_size "/tmp/xwPF_script_locations_cache" 10 5
 
-    # 清理配置更新标记文件（仅清理过期的）
-    local update_file="/tmp/realm_config_update_needed"
-    if [ -f "$update_file" ]; then
-        local file_age=$(( $(date +%s) - $(stat -f%m "$update_file" 2>/dev/null || stat -c%Y "$update_file" 2>/dev/null || echo 0) ))
-        if [ "$file_age" -gt 300 ]; then  # 5分钟过期
-            rm -f "$update_file" 2>/dev/null
-        fi
-    fi
+    # 清理过期标记文件
+    find /tmp -name "realm_config_update_needed" -mmin +5 -delete 2>/dev/null
 
-    # 安全清理超过1小时的realm临时文件（避免误删）
-    find /tmp -name "*realm*" -type f -mmin +60 2>/dev/null | while read -r file; do
-        # 确保是realm相关的临时文件，不是重要配置
-        if [[ "$file" != *"/realm/config"* ]] && [[ "$file" != *"/realm/rules"* ]]; then
-            rm -f "$file" 2>/dev/null
-        fi
-    done
+    # 清理realm临时文件
+    find /tmp -name "*realm*" -type f -mmin +60 ! -path "*/realm/config*" ! -path "*/realm/rules*" -delete 2>/dev/null
 }
 
 # ---- 主逻辑 ----
 main() {
     # 内置清理：启动时清理临时文件
     cleanup_temp_files
+
+    # 创建独立清理定时器（如果不存在）
+    if [ ! -f "/etc/systemd/system/realm-cleanup.timer" ]; then
+        create_simple_cleanup_timer
+    fi
 
     # 检查特殊参数
     if [ "$1" = "--generate-config-only" ]; then
@@ -7770,7 +7747,7 @@ Requires=realm-health-check.service
 
 [Timer]
 OnBootSec=1min
-OnUnitActiveSec=4s
+OnUnitActiveSec=1min
 AccuracySec=1s
 
 [Install]
@@ -7779,6 +7756,9 @@ EOF
 
     # 创建配置监控服务
     create_config_monitor_service
+
+    # 创建并启动清理定时器
+    create_simple_cleanup_timer
 
     # 启用并启动定时器
     systemctl daemon-reload
@@ -7790,20 +7770,61 @@ EOF
     echo -e "${GREEN}✓ 健康检查服务已启动${NC}"
 }
 
+# 创建最简单的文件清理定时器
+create_simple_cleanup_timer() {
+    # 创建清理定时器（每小时清理一次）
+    cat > "/etc/systemd/system/realm-cleanup.timer" << 'EOF'
+[Unit]
+Description=Realm File Cleanup Timer
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    # 创建清理服务
+    cat > "/etc/systemd/system/realm-cleanup.service" << 'EOF'
+[Unit]
+Description=Realm File Cleanup Service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'for f in /var/log/realm.log /etc/realm/health/health_status.conf /tmp/realm_path_cache /tmp/xwPF_script_locations_cache; do [ -f "$f" ] && [ $(stat -c%%s "$f" 2>/dev/null || echo 0) -gt 10485760 ] && tail -c 5242880 "$f" > "$f.tmp" && mv "$f.tmp" "$f" 2>/dev/null; done; find /tmp -name "*realm*" -mmin +60 -delete 2>/dev/null'
+EOF
+
+    # 启用定时器
+    systemctl daemon-reload
+    systemctl enable realm-cleanup.timer >/dev/null 2>&1
+    systemctl start realm-cleanup.timer >/dev/null 2>&1
+}
+
 stop_health_check_service() {
-    # 停止并禁用定时器
+    # 停止并禁用健康检查服务
     systemctl stop realm-health-check.timer >/dev/null 2>&1
     systemctl disable realm-health-check.timer >/dev/null 2>&1
+    systemctl stop realm-health-check.service >/dev/null 2>&1
+    systemctl disable realm-health-check.service >/dev/null 2>&1
 
     # 停止并禁用配置监控服务
     systemctl stop realm-config-monitor.service >/dev/null 2>&1
     systemctl disable realm-config-monitor.service >/dev/null 2>&1
 
+    # 停止并禁用清理定时器
+    systemctl stop realm-cleanup.timer >/dev/null 2>&1
+    systemctl disable realm-cleanup.timer >/dev/null 2>&1
+
     # 删除服务文件
     rm -f "/etc/systemd/system/realm-health-check.timer"
     rm -f "/etc/systemd/system/realm-health-check.service"
     rm -f "/etc/systemd/system/realm-config-monitor.service"
+    rm -f "/etc/systemd/system/realm-cleanup.timer"
+    rm -f "/etc/systemd/system/realm-cleanup.service"
+    rm -f "/usr/local/bin/realm-health-check.sh"
     rm -f "/etc/realm/health/config_monitor.sh"
+    rm -rf "/etc/realm/health"
 
     systemctl daemon-reload
 
