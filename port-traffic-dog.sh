@@ -794,21 +794,18 @@ get_active_ports() {
     jq -r '.ports | keys[]' "$CONFIG_FILE" 2>/dev/null | sort -n
 }
 
-# 获取今日总流量
+# 获取端口总流量
 get_daily_total_traffic() {
     local total_bytes=0
     local ports=($(get_active_ports))
-    
     for port in "${ports[@]}"; do
         local traffic_data=($(get_port_traffic "$port"))
         local input_bytes=${traffic_data[0]}
         local output_bytes=${traffic_data[1]}
         local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"single\"" "$CONFIG_FILE")
-        
         local port_total=$(calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode")
         total_bytes=$(( total_bytes + port_total ))
     done
-    
     format_bytes $total_bytes
 }
 
@@ -858,7 +855,7 @@ show_main_menu() {
     echo
 
     # 状态信息
-    echo -e "${GREEN}状态: 监控中${NC} | ${BLUE}守护端口: ${port_count}个${NC} | ${YELLOW}今日总流量: $daily_total${NC}"
+    echo -e "${GREEN}状态: 监控中${NC} | ${BLUE}守护端口: ${port_count}个${NC} | ${YELLOW}端口总流量: $daily_total${NC}"
     echo "────────────────────────────────────────────────────────"
 
     # 端口列表
@@ -2787,7 +2784,7 @@ format_status_message() {
 项目开源:<code>https://github.com/zywe03/realm-xwPF</code>
 一只轻巧的'守护犬'，时刻守护你的端口流量 | 快捷命令: dog
 
-状态: 监控中 | 守护端口: ${port_count}个 | 今日总流量: ${daily_total}
+状态: 监控中 | 守护端口: ${port_count}个 | 端口总流量: ${daily_total}
 ────────────────────────────────────────
 <pre>$(format_port_list "message")</pre>
 ────────────────────────────────────────
