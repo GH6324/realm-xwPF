@@ -3,8 +3,8 @@
 set -euo pipefail
 
 # 全局变量
-readonly SCRIPT_VERSION="1.0.2"
-readonly SCRIPT_NAME="端口流量犬"
+readonly SCRIPT_VERSION="1.0.3"
+readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
 readonly CONFIG_FILE="$CONFIG_DIR/config.json"
@@ -460,11 +460,11 @@ setup_snapshot_cron() {
     local temp_cron=$(mktemp)
 
     # 获取现有任务
-    crontab -l 2>/dev/null | grep -v "# 端口流量犬快照任务" | grep -v "port-traffic-dog.*--create-snapshot" | grep -v "每日1点清理过期快照" > "$temp_cron" || true
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗快照任务" | grep -v "port-traffic-dog.*--create-snapshot" | grep -v "每日1点清理过期快照" > "$temp_cron" || true
 
     # 添加定时任务
     cat >> "$temp_cron" << EOF
-# 端口流量犬快照任务
+# 端口流量狗快照任务
 0 0 * * * $script_path --create-snapshot daily >/dev/null 2>&1  # 每日0点创建日快照
 0 0 * * 1 $script_path --create-snapshot weekly >/dev/null 2>&1 # 每周一0点创建周快照
 0 0 1 * * $script_path --create-snapshot monthly >/dev/null 2>&1 # 每月1日0点创建月快照
@@ -489,7 +489,7 @@ remove_snapshot_cron() {
     local temp_cron=$(mktemp)
 
     # 获取当前用户的cron任务
-    crontab -l 2>/dev/null | grep -v "# 端口流量犬快照任务" | grep -v "port-traffic-dog.*--create-snapshot" | grep -v "每日1点清理过期快照" > "$temp_cron" || true
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗快照任务" | grep -v "port-traffic-dog.*--create-snapshot" | grep -v "每日1点清理过期快照" > "$temp_cron" || true
 
     # 安装清理后的cron任务
     crontab "$temp_cron"
@@ -752,13 +752,6 @@ get_port_status_label() {
     if [ ${#status_tags[@]} -gt 0 ]; then
         printf '%s' "${status_tags[@]}"
         echo
-    else
-        # 默认状态
-        if [ "$billing_mode" = "double" ]; then
-            echo "[双向无限制]"
-        else
-            echo "[单向无限制]"
-        fi
     fi
 }
 
@@ -848,7 +841,7 @@ show_main_menu() {
     local daily_total=$(get_daily_total_traffic)
 
     # 主标题
-    echo -e "${BLUE}=== 端口流量犬 v$SCRIPT_VERSION ===${NC}"
+    echo -e "${BLUE}=== 端口流量狗 v$SCRIPT_VERSION ===${NC}"
     echo -e "${GREEN}作者主页:${NC}https://zywe.de"
     echo -e "${GREEN}项目开源:${NC}https://github.com/zywe03/realm-xwPF"
     echo -e "${GREEN}一只轻巧的‘守护犬’，时刻守护你的端口流量 | 快捷命令: dog${NC}"
@@ -1259,8 +1252,8 @@ remove_nftables_rules() {
         done
 
     # 重置计数器为0而不是删除，确保重新添加时从0开始
-    nft reset counter $family $table_name "port_${port}_in" 2>/dev/null || true
-    nft reset counter $family $table_name "port_${port}_out" 2>/dev/null || true
+    nft reset counter $family $table_name "port_${port}_in" >/dev/null 2>&1 || true
+    nft reset counter $family $table_name "port_${port}_out" >/dev/null 2>&1 || true
 
     # 然后删除计数器对象
     nft delete counter $family $table_name "port_${port}_in" 2>/dev/null || true
@@ -1798,7 +1791,7 @@ get_traffic_ranking_data() {
         fi
     done
 
-    # 显示双向统计模式排行（前5名）
+    # 显示双向统计模式排行（前3名）
     echo "双向统计模式:"
     local rank=1
     if [ -s "$temp_file_double" ]; then
@@ -1810,15 +1803,15 @@ get_traffic_ranking_data() {
             fi
             echo "$rank. 端口 $port$remark_display 总计流量: $total_formatted"
             rank=$((rank + 1))
-        done < <(sort -nr "$temp_file_double" | head -5)
+        done < <(sort -nr "$temp_file_double" | head -3)
     fi
-    # 补齐空位到5个
-    while [ $rank -le 5 ]; do
+    # 补齐空位到3个
+    while [ $rank -le 3 ]; do
         echo "$rank. "
         rank=$((rank + 1))
     done
 
-    # 显示单向统计模式排行（前5名）
+    # 显示单向统计模式排行（前3名）
     echo "单向统计模式:"
     rank=1
     if [ -s "$temp_file_single" ]; then
@@ -1830,10 +1823,10 @@ get_traffic_ranking_data() {
             fi
             echo "$rank. 端口 $port$remark_display 总计流量: $total_formatted"
             rank=$((rank + 1))
-        done < <(sort -nr "$temp_file_single" | head -5)
+        done < <(sort -nr "$temp_file_single" | head -3)
     fi
-    # 补齐空位到5个
-    while [ $rank -le 5 ]; do
+    # 补齐空位到3个
+    while [ $rank -le 3 ]; do
         echo "$rank. "
         rank=$((rank + 1))
     done
@@ -2159,7 +2152,7 @@ export_config() {
 
     # 生成配置包信息文件
     cat > "$package_dir/package_info.txt" << EOF
-端口流量犬配置包信息
+端口流量狗配置包信息
 ===================
 导出时间: $(get_beijing_time '+%Y-%m-%d %H:%M:%S')
 脚本版本: $SCRIPT_VERSION
@@ -2444,7 +2437,7 @@ install_update_script() {
 
     if download_with_sources "$SCRIPT_URL" "$temp_file"; then
         # 验证下载的文件
-        if [ -s "$temp_file" ] && grep -q "端口流量犬" "$temp_file" 2>/dev/null; then
+        if [ -s "$temp_file" ] && grep -q "端口流量狗" "$temp_file" 2>/dev/null; then
             # 安装新脚本
             mv "$temp_file" "$SCRIPT_PATH"
             chmod +x "$SCRIPT_PATH"
@@ -2498,7 +2491,7 @@ uninstall_script() {
     echo "  - 所有TC限制规则"
     echo "  - 流量快照定时任务"
     echo
-    echo -e "${RED}警告：此操作将完全删除端口流量犬及其所有数据！${NC}"
+    echo -e "${RED}警告：此操作将完全删除端口流量狗及其所有数据！${NC}"
     read -p "确认卸载? [y/N]: " confirm
 
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
@@ -2530,7 +2523,7 @@ uninstall_script() {
         rm -f "$SCRIPT_PATH" 2>/dev/null || true
 
         echo -e "${GREEN}卸载完成！${NC}"
-        echo -e "${YELLOW}感谢使用端口流量犬！${NC}"
+        echo -e "${YELLOW}感谢使用端口流量狗！${NC}"
         exit 0
     else
         echo "取消卸载"
@@ -2608,7 +2601,7 @@ setup_notification_cron() {
     local temp_cron=$(mktemp)
 
     # 保留现有任务，移除旧的通知任务
-    crontab -l 2>/dev/null | grep -v "# 端口流量犬快照通知" | grep -v "# 端口流量犬状态通知" | grep -v "port-traffic-dog.*--send-snapshot" | grep -v "port-traffic-dog.*--send-status" > "$temp_cron" || true
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗快照通知" | grep -v "# 端口流量狗状态通知" | grep -v "port-traffic-dog.*--send-snapshot" | grep -v "port-traffic-dog.*--send-status" > "$temp_cron" || true
 
     # 读取配置
     local snapshot_enabled=$(jq -r '.notifications.telegram.snapshot_notifications.enabled' "$CONFIG_FILE")
@@ -2616,21 +2609,21 @@ setup_notification_cron() {
 
     # 添加快照通知 - 固定每日23点55分发送（在新快照创建前获取完整数据）
     if [ "$snapshot_enabled" = "true" ]; then
-        echo "55 23 * * * $script_path --send-snapshot >/dev/null 2>&1  # 端口流量犬快照通知" >> "$temp_cron"
+        echo "55 23 * * * $script_path --send-snapshot >/dev/null 2>&1  # 端口流量狗快照通知" >> "$temp_cron"
     fi
 
     # 添加状态通知
     if [ "$status_enabled" = "true" ]; then
         local status_interval=$(jq -r '.notifications.telegram.status_notifications.interval' "$CONFIG_FILE")
         case "$status_interval" in
-            "1m")  echo "* * * * * $script_path --send-status >/dev/null 2>&1  # 端口流量犬状态通知" >> "$temp_cron" ;;
-            "15m") echo "*/15 * * * * $script_path --send-status >/dev/null 2>&1  # 端口流量犬状态通知" >> "$temp_cron" ;;
-            "30m") echo "*/30 * * * * $script_path --send-status >/dev/null 2>&1  # 端口流量犬状态通知" >> "$temp_cron" ;;
-            "1h")  echo "0 * * * * $script_path --send-status >/dev/null 2>&1  # 端口流量犬状态通知" >> "$temp_cron" ;;
-            "2h")  echo "0 */2 * * * $script_path --send-status >/dev/null 2>&1  # 端口流量犬状态通知" >> "$temp_cron" ;;
-            "6h")  echo "0 */6 * * * $script_path --send-status >/dev/null 2>&1  # 端口流量犬状态通知" >> "$temp_cron" ;;
-            "12h") echo "0 */12 * * * $script_path --send-status >/dev/null 2>&1  # 端口流量犬状态通知" >> "$temp_cron" ;;
-            "24h") echo "0 0 * * * $script_path --send-status >/dev/null 2>&1  # 端口流量犬状态通知" >> "$temp_cron" ;;
+            "1m")  echo "* * * * * $script_path --send-status >/dev/null 2>&1  # 端口流量狗状态通知" >> "$temp_cron" ;;
+            "15m") echo "*/15 * * * * $script_path --send-status >/dev/null 2>&1  # 端口流量狗状态通知" >> "$temp_cron" ;;
+            "30m") echo "*/30 * * * * $script_path --send-status >/dev/null 2>&1  # 端口流量狗状态通知" >> "$temp_cron" ;;
+            "1h")  echo "0 * * * * $script_path --send-status >/dev/null 2>&1  # 端口流量狗状态通知" >> "$temp_cron" ;;
+            "2h")  echo "0 */2 * * * $script_path --send-status >/dev/null 2>&1  # 端口流量狗状态通知" >> "$temp_cron" ;;
+            "6h")  echo "0 */6 * * * $script_path --send-status >/dev/null 2>&1  # 端口流量狗状态通知" >> "$temp_cron" ;;
+            "12h") echo "0 */12 * * * $script_path --send-status >/dev/null 2>&1  # 端口流量狗状态通知" >> "$temp_cron" ;;
+            "24h") echo "0 0 * * * $script_path --send-status >/dev/null 2>&1  # 端口流量狗状态通知" >> "$temp_cron" ;;
         esac
     fi
 
@@ -2645,7 +2638,7 @@ remove_notification_cron() {
     local temp_cron=$(mktemp)
 
     # 保留现有任务，移除通知任务（保留PATH设置）
-    crontab -l 2>/dev/null | grep -v "# 端口流量犬快照通知" | grep -v "# 端口流量犬状态通知" | grep -v "port-traffic-dog.*--send-snapshot" | grep -v "port-traffic-dog.*--send-status" > "$temp_cron" || true
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗快照通知" | grep -v "# 端口流量狗状态通知" | grep -v "port-traffic-dog.*--send-snapshot" | grep -v "port-traffic-dog.*--send-status" > "$temp_cron" || true
 
     crontab "$temp_cron"
     rm -f "$temp_cron"
@@ -2660,14 +2653,15 @@ setup_port_auto_reset_cron() {
     local temp_cron=$(mktemp)
 
     # 保留现有任务，移除该端口的旧任务
-    crontab -l 2>/dev/null | grep -v "端口流量犬自动重置端口$port" | grep -v "port-traffic-dog.*--reset-port $port" > "$temp_cron" || true
+    crontab -l 2>/dev/null | grep -v "端口流量狗自动重置端口$port" | grep -v "port-traffic-dog.*--reset-port $port" > "$temp_cron" || true
 
     # 获取端口的重置配置
     local quota_enabled=$(jq -r ".ports.\"$port\".quota.enabled // true" "$CONFIG_FILE")
-    if [ "$quota_enabled" = "true" ]; then
+    local monthly_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE")
+    if [ "$quota_enabled" = "true" ] && [ "$monthly_limit" != "unlimited" ]; then
         local reset_day=$(jq -r ".ports.\"$port\".quota.reset_day // 1" "$CONFIG_FILE")
-        # 为该端口设置独立的定时任务
-        echo "0 0 $reset_day * * $script_path --reset-port $port >/dev/null 2>&1  # 端口流量犬自动重置端口$port" >> "$temp_cron"
+        # 为该端口设置独立的定时任务(00.05重置避免快照冲突)
+        echo "5 0 $reset_day * * $script_path --reset-port $port >/dev/null 2>&1  # 端口流量狗自动重置端口$port" >> "$temp_cron"
     fi
 
     crontab "$temp_cron"
@@ -2680,7 +2674,7 @@ remove_port_auto_reset_cron() {
     local temp_cron=$(mktemp)
 
     # 保留现有任务，移除该端口的任务
-    crontab -l 2>/dev/null | grep -v "端口流量犬自动重置端口$port" | grep -v "port-traffic-dog.*--reset-port $port" > "$temp_cron" || true
+    crontab -l 2>/dev/null | grep -v "端口流量狗自动重置端口$port" | grep -v "port-traffic-dog.*--reset-port $port" > "$temp_cron" || true
 
     crontab "$temp_cron"
     rm -f "$temp_cron"
@@ -2692,7 +2686,7 @@ format_snapshot_message() {
     local server_name=$(jq -r '.notifications.telegram.server_name // ""' "$CONFIG_FILE" 2>/dev/null || echo "$(hostname)")
     local notification_icon="🔔"
 
-    local message="<b>${notification_icon} 端口流量犬 - 快照报告</b>
+    local message="<b>${notification_icon} 端口流量狗 - 快照报告</b>
 一只轻巧的'守护犬'，时刻守护你的端口流量
 ⏰ ${timestamp}
 
@@ -2778,7 +2772,7 @@ format_status_message() {
     local port_count=${#active_ports[@]}
     local daily_total=$(get_daily_total_traffic)
 
-    local message="<b>${notification_icon} 端口流量犬 v1.0.0</b>
+    local message="<b>${notification_icon} 端口流量狗 v${SCRIPT_VERSION}</b>
 ⏰ ${timestamp}
 作者主页:<code>https://zywe.de</code>
 项目开源:<code>https://github.com/zywe03/realm-xwPF</code>
