@@ -341,7 +341,6 @@ IP地址：MPTCP协议需要知道可以使用哪些IP地址建立子流
 │   └── 90-enable-MPTCP.conf     # MPTCP系统配置文件
 │
 └── /var/log/
-    ├── realm.log                # Realm服务日志
     └── port-traffic-dog.log     # 端口流量犬日志
 ```
 

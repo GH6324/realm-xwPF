@@ -91,7 +91,6 @@ CONFIG_DIR="/etc/realm"
 MANAGER_CONF="${CONFIG_DIR}/manager.conf"
 CONFIG_PATH="${CONFIG_DIR}/config.json"
 SYSTEMD_PATH="/etc/systemd/system/realm.service"
-LOG_PATH="/var/log/realm.log"
 
 # 转发配置管理路径
 RULES_DIR="${CONFIG_DIR}/rules"
@@ -128,10 +127,6 @@ generate_network_config() {
 generate_base_config_template() {
     cat <<EOF
 {
-    "log": {
-        "level": "info",
-        "output": "${LOG_PATH}"
-    },
     "dns": {
         "mode": "ipv4_and_ipv6",
         "nameservers": [
@@ -6036,10 +6031,8 @@ generate_endpoints_from_rules() {
 generate_realm_config() {
     echo -e "${YELLOW}正在生成 Realm 配置文件...${NC}"
 
-    # 创建配置目录和日志文件
+    # 创建配置目录
     mkdir -p "$CONFIG_DIR"
-    mkdir -p "$(dirname "$LOG_PATH")"
-    touch "$LOG_PATH" && chmod 644 "$LOG_PATH"
 
     # 初始化规则目录
     init_rules_dir
@@ -6473,7 +6466,7 @@ uninstall_realm_stage_one() {
     pgrep "realm" >/dev/null 2>&1 && { pkill -f "realm"; sleep 2; pkill -9 -f "realm" 2>/dev/null; }
 
     # 清理文件
-    cleanup_files_by_paths "$REALM_PATH" "$CONFIG_DIR" "$SYSTEMD_PATH" "$LOG_PATH" "/etc/realm"
+    cleanup_files_by_paths "$REALM_PATH" "$CONFIG_DIR" "$SYSTEMD_PATH" "/etc/realm"
     cleanup_files_by_pattern "realm" "/var/log /tmp /var/tmp"
 
     # 清理独立清理定时器
@@ -7039,7 +7032,6 @@ cleanup_file_by_size() {
 # 内置清理机制
 cleanup_temp_files() {
     # 统一按大小清理所有文件（10MB清理，保留5MB）
-    cleanup_file_by_size "$LOG_PATH" 10 5
     cleanup_file_by_size "/etc/realm/health/health_status.conf" 10 5
     cleanup_file_by_size "/tmp/realm_path_cache" 10 5
     cleanup_file_by_size "/tmp/xwPF_script_locations_cache" 10 5
@@ -7792,7 +7784,7 @@ Description=Realm File Cleanup Service
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash -c 'for f in /var/log/realm.log /etc/realm/health/health_status.conf /tmp/realm_path_cache /tmp/xwPF_script_locations_cache; do [ -f "$f" ] && [ $(stat -c%%s "$f" 2>/dev/null || echo 0) -gt 10485760 ] && tail -c 5242880 "$f" > "$f.tmp" && mv "$f.tmp" "$f" 2>/dev/null; done; find /tmp -name "*realm*" -mmin +60 -delete 2>/dev/null'
+ExecStart=/bin/bash -c 'for f in /etc/realm/health/health_status.conf /tmp/realm_path_cache /tmp/xwPF_script_locations_cache; do [ -f "$f" ] && [ $(stat -c%%s "$f" 2>/dev/null || echo 0) -gt 10485760 ] && tail -c 5242880 "$f" > "$f.tmp" && mv "$f.tmp" "$f" 2>/dev/null; done; find /tmp -name "*realm*" -mmin +60 -delete 2>/dev/null'
 EOF
 
     # 启用定时器

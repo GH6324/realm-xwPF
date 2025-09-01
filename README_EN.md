@@ -336,7 +336,6 @@ File organization structure after installation:
 │   └── 90-enable-MPTCP.conf     # MPTCP system configuration file
 │
 └── /var/log/
-    ├── realm.log                # Realm service log
     └── port-traffic-dog.log     # Port traffic monitor log
 ```
 
