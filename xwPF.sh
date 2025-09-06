@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 脚本版本
-SCRIPT_VERSION="v2.0.3"
+SCRIPT_VERSION="v2.0.4"
 
 # 临时配置变量（仅在配置过程中使用）
 NAT_LISTEN_PORT=""
@@ -1281,7 +1281,7 @@ interactive_add_rule() {
     # 角色选择
     echo "请选择新配置的角色:"
     echo -e "${GREEN}[1]${NC} 中转服务器"
-    echo -e "${GREEN}[2]${NC} 服务端(落地)服务器 (双端Realm架构)"
+    echo -e "${GREEN}[2]${NC} 服务端(落地)服务器 (解密并转发)"
     echo "双端架构用于一方加密一方解密：隧道,MPTCP，Proxy Protocol等"
     echo ""
     local RULE_ROLE
@@ -1293,7 +1293,7 @@ interactive_add_rule() {
                 break
                 ;;
             2)
-                echo -e "${GREEN}已选择: 服务端(落地)服务器 (双端Realm架构)${NC}"
+                echo -e "${GREEN}已选择: 服务端(落地)服务器 (解密并转发)${NC}"
                 break
                 ;;
             *)
@@ -4458,7 +4458,7 @@ configure_nat_server() {
 
 # 出口服务器交互配置
 configure_exit_server() {
-    echo -e "${YELLOW}=== 落地服务器配置 (双端Realm架构) ===${NC}"
+    echo -e "${YELLOW}=== 解密并转发服务器配置 (双端Realm架构) ===${NC}"
     echo ""
 
     # 显示本机公网IP
@@ -4504,9 +4504,10 @@ configure_exit_server() {
     echo ""
 
     # 配置转发目标
-    echo "配置本地转发目标 (设置好用于业务的本地软件和服务):"
+    echo "内循环本地转发目标或者远端服务器业务:"
     echo ""
-    echo -e "${YELLOW}IPv4: 127.0.0.1 | IPv6: ::1 | 双栈: localhost${NC}"
+    echo -e "${YELLOW}本地业务输入: IPv4: 127.0.0.1 | IPv6: ::1 | 双栈: localhost${NC}"
+    echo -e "${YELLOW}远端业务输入:对应服务器IP ${NC}"
     echo ""
 
     # 转发目标地址配置
@@ -4530,7 +4531,7 @@ configure_exit_server() {
     # 转发目标端口配置
     local forward_port
     while true; do
-        read -p "转发本地目标业务端口(多端口使用,逗号分隔): " forward_port
+        read -p "转发目标业务端口(多端口使用,逗号分隔): " forward_port
         if validate_ports "$forward_port"; then
             echo -e "${GREEN}转发端口设置为: $forward_port${NC}"
             break

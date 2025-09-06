@@ -143,7 +143,7 @@ wget -qO- https://ghfast.top/https://raw.githubusercontent.com/zywe03/realm-xwPF
 - **🗑️ 完整卸载** - 分阶段全面清理，“轻轻的我走了，正如我轻轻的来”
 - **⚡ 原生Realm全功能** - 支持最新版realm的所有原生功能
 - tcp/udp协议
-- ws/wss/tls加密
+- ws/wss/tls 加密解密并转发
 - 单中转多出口
 - 多中转单出口
 - Proxy Protocol
