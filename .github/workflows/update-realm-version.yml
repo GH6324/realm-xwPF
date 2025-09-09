@@ -1,0 +1,148 @@
+name: Update Realm Version
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # 每小时运行一次
+  workflow_dispatch:  # 支持手动触发
+
+jobs:
+  update-realm-version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get latest realm version
+        id: get-version
+        run: |
+          set -e
+          
+          # 获取最新版本，v*.*.*格式
+          echo "正在获取realm最新版本..."
+          LATEST_RAW=$(curl -s --connect-timeout 10 --max-time 30 \
+            "https://api.github.com/repos/zhboner/realm/releases/latest" | \
+            jq -r '.tag_name // empty')
+          
+          # 检查API调用是否成功
+          if [ -z "$LATEST_RAW" ]; then
+            echo "❌ GitHub API调用失败，跳过本次检查"
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # 验证版本号格式 v*.*.*
+          if [[ ! "$LATEST_RAW" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "❌ 版本号格式不符合v*.*.*，跳过: $LATEST_RAW"
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "✅ 检测到最新版本: $LATEST_RAW"
+          echo "latest_version=$LATEST_RAW" >> $GITHUB_OUTPUT
+
+          # 从脚本中提取当前版本号
+          CURRENT_VERSION=""
+          if [ -f "xwPF.sh" ]; then
+            CURRENT_VERSION=$(grep '^REALM_VERSION=' xwPF.sh | cut -d'"' -f2)
+          fi
+
+          if [ -z "$CURRENT_VERSION" ]; then
+            echo "❌ 无法从脚本中提取当前版本号"
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "✅ 当前版本: $CURRENT_VERSION"
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+
+          # 提取当前脚本版本号并计算新版本
+          CURRENT_SCRIPT_VERSION=$(grep '^SCRIPT_VERSION=' xwPF.sh | cut -d'"' -f2)
+          if [[ "$CURRENT_SCRIPT_VERSION" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            MAJOR=${BASH_REMATCH[1]}
+            MINOR=${BASH_REMATCH[2]}
+            PATCH=${BASH_REMATCH[3]}
+            NEW_PATCH=$((PATCH + 1))
+            NEW_SCRIPT_VERSION="v${MAJOR}.${MINOR}.${NEW_PATCH}"
+            echo "✅ 脚本版本: $CURRENT_SCRIPT_VERSION -> $NEW_SCRIPT_VERSION"
+            echo "new_script_version=$NEW_SCRIPT_VERSION" >> $GITHUB_OUTPUT
+          else
+            echo "❌ 无法解析脚本版本号格式"
+            echo "skip=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # 比较版本号
+          if [ "$LATEST_RAW" = "$CURRENT_VERSION" ]; then
+            echo "🟢 版本已是最新，无需更新"
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "✅ 需要更新: $CURRENT_VERSION -> $LATEST_RAW"
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update script version
+        if: steps.get-version.outputs.skip == 'false'
+        id: update
+        run: |
+          set -e
+          
+          LATEST_VERSION="${{ steps.get-version.outputs.latest_version }}"
+          CURRENT_VERSION="${{ steps.get-version.outputs.current_version }}"
+          NEW_SCRIPT_VERSION="${{ steps.get-version.outputs.new_script_version }}"
+
+          echo "正在更新脚本版本号..."
+
+          # 备份原文件
+          cp xwPF.sh xwPF.sh.backup
+
+          # 更新REALM_VERSION变量
+          sed -i "s/^REALM_VERSION=\".*\"/REALM_VERSION=\"$LATEST_VERSION\"/" xwPF.sh
+
+          # 更新SCRIPT_VERSION变量
+          sed -i "s/^SCRIPT_VERSION=\".*\"/SCRIPT_VERSION=\"$NEW_SCRIPT_VERSION\"/" xwPF.sh
+
+          # 验证更新是否成功
+          NEW_REALM_VERSION=$(grep '^REALM_VERSION=' xwPF.sh | cut -d'"' -f2)
+          NEW_SCRIPT_VERSION_CHECK=$(grep '^SCRIPT_VERSION=' xwPF.sh | cut -d'"' -f2)
+
+          if [ "$NEW_REALM_VERSION" != "$LATEST_VERSION" ] || [ "$NEW_SCRIPT_VERSION_CHECK" != "$NEW_SCRIPT_VERSION" ]; then
+            echo "❌ 版本号更新失败，恢复原文件"
+            mv xwPF.sh.backup xwPF.sh
+            echo "update_success=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # 清理备份文件
+          rm -f xwPF.sh.backup
+
+          echo "✅ 版本号更新成功: $CURRENT_VERSION -> $LATEST_VERSION"
+          echo "✅ 脚本版本更新成功: $NEW_SCRIPT_VERSION"
+          echo "update_success=true" >> $GITHUB_OUTPUT
+
+      - name: Create Pull Request
+        if: steps.get-version.outputs.skip == 'false' && steps.update.outputs.update_success == 'true'
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "bump: realm版本号${{ steps.get-version.outputs.latest_version }}"
+          title: "bump: realm版本号${{ steps.get-version.outputs.latest_version }}"
+          body: |
+            自动检测到realm新版本发布
+            
+            - 当前版本：${{ steps.get-version.outputs.current_version }}
+            - 最新版本：${{ steps.get-version.outputs.latest_version }}
+            
+            此PR由GitHub Actions自动创建，请检查后合并。
+          branch: update-realm-${{ steps.get-version.outputs.latest_version }}
+          delete-branch: true
+          
+      - name: Summary
+        if: always()
+        run: |
+          if [ "${{ steps.get-version.outputs.skip }}" = "true" ]; then
+            echo "🟢 本次检查完成，无需更新"
+          elif [ "${{ steps.update.outputs.update_success }}" = "true" ]; then
+            echo "✅ 成功创建PR，版本更新: ${{ steps.get-version.outputs.current_version }} -> ${{ steps.get-version.outputs.latest_version }}"
+          else
+            echo "❌ 更新过程中出现错误，保持原状"
+          fi

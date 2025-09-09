@@ -3,6 +3,9 @@
 # 脚本版本
 SCRIPT_VERSION="v2.0.4"
 
+# realm版本,备用 & 自动更新
+REALM_VERSION="v2.9.2"
+
 # 临时配置变量（仅在配置过程中使用）
 NAT_LISTEN_PORT=""
 NAT_LISTEN_IP=""
@@ -5186,8 +5189,8 @@ get_latest_realm_version() {
 
     # 如果失败，使用硬编码版本号
     if [ -z "$latest_version" ]; then
-        echo -e "${YELLOW}使用当前最新版本 v2.9.1${NC}" >&2
-        latest_version="v2.9.2"
+        echo -e "${YELLOW}使用当前最新版本 ${REALM_VERSION}${NC}" >&2
+        latest_version="$REALM_VERSION"
     fi
 
     echo -e "${GREEN}✓ 检测到最新版本: ${latest_version}${NC}" >&2
