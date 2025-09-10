@@ -16,12 +16,20 @@ get_gmt8_time() {
     TZ='GMT-8' date "$@"
 }
 
-# 生成新的规则ID（导入专用，避免冲突）
-generate_import_rule_id() {
-    local base_id="$1"
-    local target_index="$2"
-    # 使用时间戳 + endpoint索引 + 目标索引确保唯一性
-    echo $(($(date +%s) % 100000 + base_id * 100 + target_index + 1))
+# 生成新的规则ID（复制自主脚本）
+generate_rule_id() {
+    local max_id=0
+    if [ -d "$RULES_DIR" ]; then
+        for rule_file in "${RULES_DIR}"/rule-*.conf; do
+            if [ -f "$rule_file" ]; then
+                local id=$(basename "$rule_file" | sed 's/rule-\([0-9]*\)\.conf/\1/')
+                if [ "$id" -gt "$max_id" ]; then
+                    max_id=$id
+                fi
+            fi
+        done
+    fi
+    echo $((max_id + 1))
 }
 
 # 配置路径定义（与主脚本保持一致）
@@ -119,8 +127,10 @@ process_json() {
             # 有listen_transport字段，判断为落地服务器
             rule_role="2"
             rule_name="落地"
-            listen_ip="::"  # 落地服务器监听IP强制改为::
+            # 落地服务器监听IP强制改为::（双栈监听）
+            listen_ip="::"
         fi
+        # 中转服务器保持原始监听IP
 
         # 收集所有目标地址（主地址 + 额外地址）
         local all_targets=("$remote")
@@ -150,12 +160,29 @@ process_json() {
         # 为每个目标创建独立的规则文件
         local target_index=0
         for target in "${all_targets[@]}"; do
-            # 使用导入专用的规则ID生成函数，确保唯一性
-            local rule_id=$(generate_import_rule_id "$i" "$target_index")
+            # 使用主脚本的标准规则ID生成函数
+            local rule_id=$(generate_rule_id)
 
             # 解析目标地址和端口
             local target_host="${target%:*}"
             local target_port="${target##*:}"
+
+            # 为多目标配置设置负载均衡
+            local rule_balance_mode="off"
+            local rule_weights=""
+            if [ ${#all_targets[@]} -gt 1 ]; then
+                # 多目标时使用负载均衡配置
+                rule_balance_mode="$balance_mode"
+                if [ -n "$weights" ]; then
+                    # 提取当前目标的权重
+                    IFS=',' read -ra weight_array <<< "$weights"
+                    if [ "$target_index" -lt ${#weight_array[@]} ]; then
+                        rule_weights="${weight_array[$target_index]}"
+                    else
+                        rule_weights="1"  # 默认权重
+                    fi
+                fi
+            fi
 
             # 创建规则文件（使用主脚本的标准格式）
             local rule_file="$OUTPUT_DIR/rule-$rule_id.conf"
@@ -172,9 +199,9 @@ CREATED_TIME="$(get_gmt8_time '+%Y-%m-%d %H:%M:%S')"
 RULE_NOTE=""
 
 # 负载均衡配置
-BALANCE_MODE="off"
+BALANCE_MODE="$rule_balance_mode"
 TARGET_STATES=""
-WEIGHTS=""
+WEIGHTS="$rule_weights"
 
 # 故障转移配置
 FAILOVER_ENABLED="false"
