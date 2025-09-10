@@ -16,20 +16,12 @@ get_gmt8_time() {
     TZ='GMT-8' date "$@"
 }
 
-# 生成新的规则ID（复制自主脚本）
-generate_rule_id() {
-    local max_id=0
-    if [ -d "$RULES_DIR" ]; then
-        for rule_file in "${RULES_DIR}"/rule-*.conf; do
-            if [ -f "$rule_file" ]; then
-                local id=$(basename "$rule_file" | sed 's/rule-\([0-9]*\)\.conf/\1/')
-                if [ "$id" -gt "$max_id" ]; then
-                    max_id=$id
-                fi
-            fi
-        done
-    fi
-    echo $((max_id + 1))
+# 生成新的规则ID（导入专用，避免冲突）
+generate_import_rule_id() {
+    local base_id="$1"
+    local target_index="$2"
+    # 使用时间戳 + endpoint索引 + 目标索引确保唯一性
+    echo $(($(date +%s) % 100000 + base_id * 100 + target_index + 1))
 }
 
 # 配置路径定义（与主脚本保持一致）
@@ -158,8 +150,8 @@ process_json() {
         # 为每个目标创建独立的规则文件
         local target_index=0
         for target in "${all_targets[@]}"; do
-            # 使用主脚本的规则ID生成函数
-            local rule_id=$(generate_rule_id)
+            # 使用导入专用的规则ID生成函数，确保唯一性
+            local rule_id=$(generate_import_rule_id "$i" "$target_index")
 
             # 解析目标地址和端口
             local target_host="${target%:*}"
@@ -325,21 +317,30 @@ done
 echo ""
 
 # 确认导入
-echo -e "${RED}警告: 导入操作将添加新的转发规则！${NC}"
+echo -e "${RED}警告: 导入操作将清空现有规则并导入新配置！${NC}"
+echo -e "${YELLOW}这是初始化导入，会删除所有现有的转发规则${NC}"
 echo ""
-read -p "确认导入这些规则？(y/n): " confirm
+read -p "确认清空现有规则并导入新配置？(y/n): " confirm
 if ! echo "$confirm" | grep -qE "^[Yy]$"; then
     echo -e "${BLUE}已取消导入操作${NC}"
     rm -rf "$OUTPUT_DIR"
     exit 1
 fi
 
-# 执行导入
+# 执行初始化导入
 echo ""
-echo -e "${YELLOW}正在导入配置...${NC}"
+echo -e "${YELLOW}正在清空现有规则...${NC}"
 
-# 初始化规则目录
+# 清空现有规则目录
+if [ -d "$RULES_DIR" ]; then
+    rm -rf "$RULES_DIR"/*
+    echo -e "${GREEN}✓${NC} 已清空现有规则"
+fi
+
+# 重新创建规则目录
 mkdir -p "$RULES_DIR"
+
+echo -e "${YELLOW}正在导入新配置...${NC}"
 
 # 导入规则文件
 imported_count=0
