@@ -1838,6 +1838,51 @@ import_config_package() {
     read -p "按回车键返回..."
 }
 
+# 下载realm配置识别脚本
+download_realm_ocr_script() {
+    local script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xw_realm_OCR.sh"
+    local target_path="/etc/realm/xw_realm_OCR.sh"
+
+    echo -e "${GREEN}正在下载最新realm配置识别脚本...${NC}"
+
+    # 创建目录
+    mkdir -p "$(dirname "$target_path")"
+
+    # 使用统一多源下载函数
+    if download_from_sources "$script_url" "$target_path"; then
+        chmod +x "$target_path"
+        return 0
+    else
+        echo -e "${RED}请检查网络连接${NC}"
+        return 1
+    fi
+}
+
+# 识别realm配置文件并导入
+import_realm_config() {
+    # 下载识别脚本
+    local ocr_script="/etc/realm/xw_realm_OCR.sh"
+    if [ ! -f "$ocr_script" ]; then
+        if ! download_realm_ocr_script; then
+            read -p "按回车键返回..."
+            return
+        fi
+    fi
+
+    # 直接调用识别脚本，传递规则目录参数
+    bash "$ocr_script" "$RULES_DIR"
+
+    # 如果导入成功，重启服务
+    if [ $? -eq 0 ]; then
+        echo ""
+        echo -e "${YELLOW}正在重启服务以应用新配置...${NC}"
+        service_restart
+    fi
+
+    echo ""
+    read -p "按回车键返回..."
+}
+
 # 转发配置管理菜单
 rules_management_menu() {
     while true; do
@@ -1993,9 +2038,10 @@ rules_management_menu() {
                     echo "请选择操作:"
                     echo -e "${GREEN}1.${NC} 导出配置包(包含查看配置)"
                     echo -e "${GREEN}2.${NC} 导入配置包"
+                    echo -e "${GREEN}3.${NC} 识别realm配置文件并导入"
                     echo -e "${GREEN}0.${NC} 返回上级菜单"
                     echo ""
-                    read -p "请输入选择 [0-2]: " sub_choice
+                    read -p "请输入选择 [0-3]: " sub_choice
                     echo ""
 
                     case $sub_choice in
@@ -2004,6 +2050,9 @@ rules_management_menu() {
                             ;;
                         2)
                             import_config_package
+                            ;;
+                        3)
+                            import_realm_config
                             ;;
                         0)
                             break
@@ -4045,34 +4094,6 @@ toggle_target_server() {
     read -p "按回车键继续..."
 }
 
-# 交互式角色选择
-interactive_role_selection() {
-    echo -e "${YELLOW}=== Realm 中转加速配置向导 ===${NC}"
-    echo ""
-    echo "请选择本服务器的角色:"
-    echo -e "${GREEN}[1]${NC} 中转服务器"
-    echo -e "${GREEN}[2]${NC} 落地服务器 (双端Realm架构)"
-    echo ""
-
-    while true; do
-        read -p "请输入数字 [1-2]: " ROLE
-        case $ROLE in
-            1)
-                echo -e "${GREEN}已选择: 中转服务器${NC}"
-                break
-                ;;
-            2)
-                echo -e "${GREEN}已选择: 落地服务器 (双端Realm架构)${NC}"
-                break
-                ;;
-            *)
-                echo -e "${RED}无效选择，请输入 1 或 2${NC}"
-                ;;
-        esac
-    done
-    echo ""
-}
-
 # 中转服务器交互配置
 configure_nat_server() {
     echo -e "${YELLOW}=== 中转服务器配置(不了解入口出口一般回车默认即可) ===${NC}"
@@ -5482,89 +5503,6 @@ generate_rule_endpoint_config() {
         }"
 
     echo "$endpoint_config"
-}
-
-# 100%成功率的文件查找
-find_file_path() {
-    local filename="$1"
-    local cache_file="/tmp/realm_path_cache"
-
-    # 检查缓存
-    if [ -f "$cache_file" ]; then
-        local cached_path=$(grep "^$filename:" "$cache_file" 2>/dev/null | cut -d: -f2)
-        if [ -n "$cached_path" ] && [ -f "$cached_path" ]; then
-            echo "$cached_path"
-            return 0
-        fi
-    fi
-
-    # 第一阶段：常见位置直接检查
-    local common_paths=(
-        "/etc/realm/health/$filename"
-        "/etc/realm/$filename"
-        "/var/lib/realm/$filename"
-        "/opt/realm/$filename"
-        "/usr/local/etc/realm/$filename"
-        "/var/cache/realm/$filename"
-        "/tmp/realm/$filename"
-        "/home/*/realm/$filename"
-        "/root/realm/$filename"
-    )
-
-    for path in "${common_paths[@]}"; do
-        # 处理通配符路径
-        if [[ "$path" == *"*"* ]]; then
-            for expanded_path in $path; do
-                if [ -f "$expanded_path" ]; then
-                    echo "$filename:$expanded_path" >> "$cache_file"
-                    echo "$expanded_path"
-                    return 0
-                fi
-            done
-        else
-            if [ -f "$path" ]; then
-                echo "$filename:$path" >> "$cache_file"
-                echo "$path"
-                return 0
-            fi
-        fi
-    done
-
-    # 第二阶段：分区域搜索（限制深度）
-    local search_dirs=("/etc" "/var" "/opt" "/usr" "/home" "/root")
-    for dir in "${search_dirs[@]}"; do
-        if [ -d "$dir" ]; then
-            local found_path=""
-            if command -v timeout >/dev/null 2>&1; then
-                found_path=$(timeout 3 find "$dir" -maxdepth 4 -name "$filename" -type f 2>/dev/null | head -1)
-            else
-                found_path=$(find "$dir" -maxdepth 4 -name "$filename" -type f 2>/dev/null | head -1)
-            fi
-
-            if [ -n "$found_path" ] && [ -f "$found_path" ]; then
-                echo "$filename:$found_path" >> "$cache_file"
-                echo "$found_path"
-                return 0
-            fi
-        fi
-    done
-
-    # 第三阶段：全系统搜索
-    local found_path=""
-    if command -v timeout >/dev/null 2>&1; then
-        found_path=$(timeout 10 find / -name "$filename" -type f 2>/dev/null | head -1)
-    else
-        # 如果没有timeout，限制搜索范围避免卡死
-        found_path=$(find /etc /var /opt /usr /home /root /tmp -name "$filename" -type f 2>/dev/null | head -1)
-    fi
-
-    if [ -n "$found_path" ] && [ -f "$found_path" ]; then
-        echo "$filename:$found_path" >> "$cache_file"
-        echo "$found_path"
-        return 0
-    fi
-
-    return 1
 }
 
 # 从规则生成endpoints配置（支持负载均衡合并和故障转移）
