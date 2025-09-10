@@ -3,18 +3,42 @@
 # xw_realm_OCR.sh - Realm配置文件识别脚本
 # 识别用户的realm配置文件，识别endpoints字段，导入脚本管理
 
-# 颜色定义
+# 颜色定义（与主脚本保持一致）
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+WHITE='\033[1;37m'
 NC='\033[0m'
 
-RULES_DIR="$1"
+# 获取GMT+8时间（复制自主脚本）
+get_gmt8_time() {
+    TZ='GMT-8' date "$@"
+}
 
-if [ -z "$RULES_DIR" ]; then
-    echo "用法: $0 <规则目录>"
-    exit 1
+# 生成新的规则ID（复制自主脚本）
+generate_rule_id() {
+    local max_id=0
+    if [ -d "$RULES_DIR" ]; then
+        for rule_file in "${RULES_DIR}"/rule-*.conf; do
+            if [ -f "$rule_file" ]; then
+                local id=$(basename "$rule_file" | sed 's/rule-\([0-9]*\)\.conf/\1/')
+                if [ "$id" -gt "$max_id" ]; then
+                    max_id=$id
+                fi
+            fi
+        done
+    fi
+    echo $((max_id + 1))
+}
+
+# 配置路径定义（与主脚本保持一致）
+CONFIG_DIR="/etc/realm"
+RULES_DIR="${CONFIG_DIR}/rules"
+
+# 检查参数
+if [ -n "$1" ]; then
+    RULES_DIR="$1"
 fi
 
 echo -e "${YELLOW}=== 识别realm配置文件并导入 ===${NC}"
@@ -106,13 +130,14 @@ process_json() {
             listen_ip="::"  # 落地服务器监听IP强制改为::
         fi
 
-        # 生成唯一规则ID (基于时间戳和索引)
-        local rule_id=$(($(date +%s%N | cut -c10-13) + i + 1))
-
-        # 处理多地址
-        local final_remote_host="$remote_host"
+        # 收集所有目标地址（主地址 + 额外地址）
+        local all_targets=("$remote")
         if [ -n "$extra_remotes" ]; then
-            final_remote_host="$remote_host,$extra_remotes"
+            IFS=',' read -ra extra_array <<< "$extra_remotes"
+            for extra_addr in "${extra_array[@]}"; do
+                extra_addr=$(echo "$extra_addr" | xargs)  # 去除空格
+                all_targets+=("$extra_addr")
+            done
         fi
 
         # 处理负载均衡配置
@@ -123,13 +148,27 @@ process_json() {
                 balance_mode="roundrobin"
                 # 提取权重 (格式: "roundrobin: 4, 2, 1")
                 weights=$(echo "$balance" | sed 's/.*roundrobin:\s*//' | tr -d ' ')
+            elif echo "$balance" | grep -q "iphash"; then
+                balance_mode="iphash"
+                # 提取权重 (格式: "iphash: 2, 1")
+                weights=$(echo "$balance" | sed 's/.*iphash:\s*//' | tr -d ' ')
             fi
         fi
 
-        # 创建规则文件
-        local rule_file="$OUTPUT_DIR/rule-$rule_id.conf"
+        # 为每个目标创建独立的规则文件
+        local target_index=0
+        for target in "${all_targets[@]}"; do
+            # 使用主脚本的规则ID生成函数
+            local rule_id=$(generate_rule_id)
 
-        cat > "$rule_file" << RULE_EOF
+            # 解析目标地址和端口
+            local target_host="${target%:*}"
+            local target_port="${target##*:}"
+
+            # 创建规则文件（使用主脚本的标准格式）
+            local rule_file="$OUTPUT_DIR/rule-$rule_id.conf"
+
+            cat > "$rule_file" << RULE_EOF
 RULE_ID=$rule_id
 RULE_NAME="$rule_name"
 RULE_ROLE="$rule_role"
@@ -137,41 +176,59 @@ SECURITY_LEVEL="standard"
 LISTEN_PORT="$listen_port"
 LISTEN_IP="$listen_ip"
 ENABLED="true"
-CREATED_TIME="$(date '+%Y-%m-%d %H:%M:%S')"
+CREATED_TIME="$(get_gmt8_time '+%Y-%m-%d %H:%M:%S')"
 RULE_NOTE=""
-MPTCP_MODE="off"
-PROXY_MODE="off"
-BALANCE_MODE="$balance_mode"
-WEIGHTS="$weights"
-FAILOVER_ENABLED="false"
+
+# 负载均衡配置
+BALANCE_MODE="off"
 TARGET_STATES=""
+WEIGHTS=""
+
+# 故障转移配置
+FAILOVER_ENABLED="false"
+HEALTH_CHECK_INTERVAL="4"
+FAILURE_THRESHOLD="2"
+SUCCESS_THRESHOLD="2"
+CONNECTION_TIMEOUT="3"
+
+# MPTCP配置
+MPTCP_MODE="off"
+
+# Proxy配置
+PROXY_MODE="off"
 RULE_EOF
 
-        if [ "$rule_role" = "1" ]; then
-            # 中转服务器字段
-            cat >> "$rule_file" << RULE_EOF
-REMOTE_HOST="$final_remote_host"
-REMOTE_PORT="$remote_port"
+            if [ "$rule_role" = "1" ]; then
+                # 中转服务器字段（使用主脚本的标准格式）
+                cat >> "$rule_file" << RULE_EOF
+
+# 中转服务器配置
 THROUGH_IP="::"
+REMOTE_HOST="$target_host"
+REMOTE_PORT="$target_port"
 TLS_SERVER_NAME=""
 TLS_CERT_PATH=""
 TLS_KEY_PATH=""
 WS_PATH=""
 WS_HOST=""
 RULE_EOF
-        else
-            # 落地服务器字段
-            cat >> "$rule_file" << RULE_EOF
-FORWARD_TARGET="$remote"
-TLS_SERVER_NAME=""
-TLS_CERT_PATH=""
-TLS_KEY_PATH=""
-WS_PATH=""
-WS_HOST=""
-RULE_EOF
-        fi
+            else
+                # 落地服务器字段（使用主脚本的标准格式）
+                cat >> "$rule_file" << RULE_EOF
 
-        echo "✓ 生成规则文件: rule-$rule_id.conf ($rule_name)"
+# 落地服务器配置
+FORWARD_TARGET="$target"
+TLS_SERVER_NAME=""
+TLS_CERT_PATH=""
+TLS_KEY_PATH=""
+WS_PATH=""
+WS_HOST=""
+RULE_EOF
+            fi
+
+            echo "✓ 生成规则文件: rule-$rule_id.conf ($rule_name → $target_host:$target_port)"
+            target_index=$((target_index + 1))
+        done
     done
 
     return 0
@@ -256,7 +313,13 @@ echo -e "${BLUE}识别到 $rule_count 个转发规则:${NC}"
 for rule_file in "$OUTPUT_DIR"/rule-*.conf; do
     if [ -f "$rule_file" ]; then
         source "$rule_file"
-        echo -e "  • ${GREEN}$RULE_NAME${NC}: $LISTEN_PORT"
+        if [ "$RULE_ROLE" = "1" ]; then
+            # 中转服务器
+            echo -e "  • ${GREEN}$RULE_NAME${NC}: $LISTEN_PORT → $REMOTE_HOST:$REMOTE_PORT"
+        else
+            # 落地服务器
+            echo -e "  • ${GREEN}$RULE_NAME${NC}: $LISTEN_PORT → $FORWARD_TARGET"
+        fi
     fi
 done
 echo ""
