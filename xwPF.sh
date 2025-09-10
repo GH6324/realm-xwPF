@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 脚本版本
-SCRIPT_VERSION="v2.0.4"
+SCRIPT_VERSION="v2.1.0"
 
 # realm版本,备用 & 自动更新
 REALM_VERSION="v2.9.2"
@@ -106,18 +106,14 @@ generate_network_config() {
     local config_file="/etc/realm/config.json"
     local base_network='{
         "no_tcp": false,
-        "use_udp": true,
-        "tcp_timeout": 5,
-        "udp_timeout": 30,
-        "tcp_keepalive": 12,
-        "tcp_keepalive_probe": 3
+        "use_udp": true
     }'
 
     # 如果配置文件存在且有Proxy Protocol配置，则合并
     if [ -f "$config_file" ]; then
-        local existing_proxy=$(jq -r '.network | {send_proxy, send_proxy_version, accept_proxy, accept_proxy_timeout} | to_entries | map(select(.value != null)) | from_entries' "$config_file" 2>/dev/null)
-        if [ "$existing_proxy" != "{}" ] && [ "$existing_proxy" != "null" ]; then
-            echo "$base_network" | jq ". + $existing_proxy"
+        local existing_proxy=$(jq -r '.network | {send_proxy, send_proxy_version, accept_proxy, accept_proxy_timeout} | to_entries | map(select(.value != null)) | from_entries' "$config_file" 2>/dev/null || echo "{}")
+        if [ -n "$existing_proxy" ] && [ "$existing_proxy" != "{}" ] && [ "$existing_proxy" != "null" ]; then
+            echo "$base_network" | jq ". + $existing_proxy" 2>/dev/null || echo "$base_network"
             return
         fi
     fi
@@ -126,42 +122,21 @@ generate_network_config() {
     echo "$base_network"
 }
 
-# 统一的realm配置模板
-generate_base_config_template() {
-    cat <<EOF
-{
-    "dns": {
-        "mode": "ipv4_and_ipv6",
-        "nameservers": [
-            "1.1.1.1:53",
-            "8.8.8.8:53",
-            "[2606:4700:4700::1111]:53",
-            "[2001:4860:4860::8888]:53"
-        ],
-        "protocol": "tcp_and_udp",
-        "min_ttl": 600,
-        "max_ttl": 1800,
-        "cache_size": 256
-    },
-    "network": $(generate_network_config)
-}
-EOF
-}
-
 # 生成完整的realm配置文件
 generate_complete_config() {
     local endpoints="$1"
     local config_path="${2:-$CONFIG_PATH}"
 
-    # 获取基础配置模板
-    local base_config=$(generate_base_config_template)
-
-    # 移除基础配置的结尾大括号，准备添加endpoints
-    base_config=$(echo "$base_config" | sed '$d')
+    # 获取network配置，确保有有效值
+    local network_config=$(generate_network_config)
+    if [ -z "$network_config" ]; then
+        network_config='{"no_tcp": false, "use_udp": true}'
+    fi
 
     # 生成完整配置
     cat > "$config_path" <<EOF
-$base_config,
+{
+    "network": $network_config,
     "endpoints": [$endpoints
     ]
 }
@@ -3698,7 +3673,7 @@ load_balance_management_menu() {
                 ;;
             3)
                 # 开启/关闭故障转移
-                toggle_failover_mode
+                failover_management_menu
                 ;;
             0)
                 # 返回上级菜单
@@ -5601,28 +5576,21 @@ generate_endpoints_from_rules() {
         return 0
     fi
 
-    # 动态查找健康状态文件
-    local health_status_file=$(find_file_path "health_status.conf")
+    # 健康状态读取（直接读取健康状态文件）
     declare -A health_status
+    local health_status_file="/etc/realm/health/health_status.conf"
 
-    # 读取健康状态文件（使用绝对路径）
     if [ -f "$health_status_file" ]; then
         while read -r line; do
             # 跳过注释行和空行
             [[ "$line" =~ ^#.*$ ]] && continue
             [[ -z "$line" ]] && continue
 
-            # 解析格式: RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK
+            # 解析格式: RULE_ID|TARGET|STATUS|...
             if [[ "$line" =~ ^[0-9]+\|([^|]+)\|([^|]+)\| ]]; then
                 local host="${BASH_REMATCH[1]}"
                 local status="${BASH_REMATCH[2]}"
-
-                # 如果主机已经有状态记录，且当前状态是故障，则保持故障状态
-                if [ "${health_status[$host]}" = "failed" ] || [ "$status" = "failed" ]; then
-                    health_status["$host"]="failed"
-                else
-                    health_status["$host"]="$status"
-                fi
+                health_status["$host"]="$status"
             fi
         done < "$health_status_file"
     fi
@@ -6466,12 +6434,18 @@ uninstall_realm_stage_one() {
     # 停止服务
     systemctl is-active realm >/dev/null 2>&1 && systemctl stop realm
     systemctl is-enabled realm >/dev/null 2>&1 && systemctl disable realm >/dev/null 2>&1
-    stop_health_check_service
+    # 停止健康检查服务（通过xwFailover.sh）
+    if [ -f "/etc/realm/xwFailover.sh" ]; then
+        bash "/etc/realm/xwFailover.sh" stop >/dev/null 2>&1
+    fi
     pgrep "realm" >/dev/null 2>&1 && { pkill -f "realm"; sleep 2; pkill -9 -f "realm" 2>/dev/null; }
 
     # 清理文件
     cleanup_files_by_paths "$REALM_PATH" "$CONFIG_DIR" "$SYSTEMD_PATH" "/etc/realm"
     cleanup_files_by_pattern "realm" "/var/log /tmp /var/tmp"
+
+    # 清理xwFailover.sh相关文件
+    rm -f "/etc/realm/xwFailover.sh"
 
     # 清理独立清理定时器
     systemctl stop realm-cleanup.timer >/dev/null 2>&1
@@ -6863,12 +6837,32 @@ get_gmt8_time() {
     TZ='GMT-8' date "$@"
 }
 
+# 下载故障转移管理脚本
+download_failover_script() {
+    local script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xwFailover.sh"
+    local target_path="/etc/realm/xwFailover.sh"
+
+    echo -e "${GREEN}正在下载最新故障转移脚本...${NC}"
+
+    # 创建目录
+    mkdir -p "$(dirname "$target_path")"
+
+    # 使用统一多源下载函数
+    if download_from_sources "$script_url" "$target_path"; then
+        chmod +x "$target_path"
+        return 0
+    else
+        echo -e "${RED}请检查网络连接${NC}"
+        return 1
+    fi
+}
+
 # 下载中转网络链路测试脚本
 download_speedtest_script() {
     local script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/speedtest.sh"
     local target_path="/etc/realm/speedtest.sh"
 
-    echo -e "${GREEN}正在下载最新版测速脚本...${NC}"
+    echo -e "${GREEN}正在下载最新测速脚本...${NC}"
 
     # 创建目录
     mkdir -p "$(dirname "$target_path")"
@@ -6902,6 +6896,21 @@ speedtest_menu() {
     echo ""
     read -p "按回车键返回主菜单..."
 }
+
+# 故障转移管理菜单
+failover_management_menu() {
+    local failover_script="/etc/realm/xwFailover.sh"
+
+    if ! download_failover_script; then
+        echo -e "${RED}无法下载故障转移脚本，功能暂时不可用${NC}"
+        read -p "按回车键返回主菜单..."
+        return 1
+    fi
+
+    # 直接调用故障转移配置功能
+    bash "$failover_script" toggle
+}
+
 # 下载端口流量犬脚本
 download_port_traffic_dog_script() {
     local script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/port-traffic-dog.sh"
@@ -7062,6 +7071,10 @@ main() {
         # 只生成配置文件，不显示菜单
         generate_realm_config
         exit 0
+    elif [ "$1" = "--restart-service" ]; then
+        # 重启服务接口（供外部调用）
+        service_restart
+        exit $?
     fi
 
     check_root
@@ -7078,693 +7091,9 @@ main() {
     esac
 }
 
-# 故障转移切换功能（按端口分组管理）
-toggle_failover_mode() {
-    while true; do
-        clear
-        echo -e "${YELLOW}=== 开启/关闭故障转移 ===${NC}"
-        echo ""
 
-        # 按端口分组收集启用负载均衡的中转服务器规则
-        # 清空并重新初始化关联数组
-        unset port_groups port_configs port_failover_status
-        declare -A port_groups
-        declare -A port_configs
-        declare -A port_failover_status
 
-        for rule_file in "${RULES_DIR}"/rule-*.conf; do
-            if [ -f "$rule_file" ]; then
-                if read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$BALANCE_MODE" != "off" ]; then
-                    local port_key="$LISTEN_PORT"
 
-                    # 存储端口配置（使用第一个规则的配置作为基准）
-                    if [ -z "${port_configs[$port_key]}" ]; then
-                        port_configs[$port_key]="$RULE_NAME"
-                        port_failover_status[$port_key]="${FAILOVER_ENABLED:-false}"
-                    fi
-
-                    # 正确处理REMOTE_HOST中可能包含多个地址的情况
-                    if [[ "$REMOTE_HOST" == *","* ]]; then
-                        # REMOTE_HOST包含多个地址，分别添加
-                        IFS=',' read -ra host_array <<< "$REMOTE_HOST"
-                        for host in "${host_array[@]}"; do
-                            local target="$host:$REMOTE_PORT"
-                            # 检查是否已存在，避免重复添加
-                            if [[ "${port_groups[$port_key]}" != *"$target"* ]]; then
-                                if [ -z "${port_groups[$port_key]}" ]; then
-                                    port_groups[$port_key]="$target"
-                                else
-                                    port_groups[$port_key]="${port_groups[$port_key]},$target"
-                                fi
-                            fi
-                        done
-                    else
-                        # REMOTE_HOST是单个地址
-                        local target="$REMOTE_HOST:$REMOTE_PORT"
-                        # 检查是否已存在，避免重复添加
-                        if [[ "${port_groups[$port_key]}" != *"$target"* ]]; then
-                            if [ -z "${port_groups[$port_key]}" ]; then
-                                port_groups[$port_key]="$target"
-                            else
-                                port_groups[$port_key]="${port_groups[$port_key]},$target"
-                            fi
-                        fi
-                    fi
-                fi
-            fi
-        done
-
-        # 检查是否有负载均衡规则组（只显示有多个目标的规则组）
-        local has_balance_rules=false
-        declare -a rule_ports
-        declare -a rule_names
-
-        if [ ${#port_groups[@]} -gt 0 ]; then
-            echo -e "${BLUE}当前负载均衡规则组:${NC}"
-            echo ""
-
-            for port_key in $(printf '%s\n' "${!port_groups[@]}" | sort -n); do
-                # 计算目标服务器数量
-                IFS=',' read -ra targets <<< "${port_groups[$port_key]}"
-                local target_count=${#targets[@]}
-
-                # 只显示有多个目标服务器的规则组（故障转移的前提条件）
-                if [ $target_count -gt 1 ]; then
-                    if [ "$has_balance_rules" = false ]; then
-                        has_balance_rules=true
-                    fi
-
-                    # 使用数字ID
-                    local rule_number=$((${#rule_ports[@]} + 1))
-                    rule_ports+=("$port_key")
-                    rule_names+=("${port_configs[$port_key]}")
-
-                    # 获取故障转移状态
-                    local failover_status="${port_failover_status[$port_key]}"
-                    local status_text="关闭"
-                    local status_color="${RED}"
-
-                    if [ "$failover_status" = "true" ]; then
-                        status_text="开启"
-                        status_color="${GREEN}"
-                    fi
-
-                    echo -e "${GREEN}$rule_number.${NC} ${port_configs[$port_key]} (端口: $port_key) - $target_count个目标服务器 - 故障转移: ${status_color}$status_text${NC}"
-                fi
-            done
-        fi
-
-        if [ "$has_balance_rules" = false ]; then
-            echo -e "${YELLOW}暂无启用负载均衡的规则组${NC}"
-            echo -e "${BLUE}提示: 只有开启负载均衡才能使用故障转移功能${NC}"
-            echo ""
-            echo -e "${BLUE}故障转移的前提条件：${NC}"
-            echo -e "${BLUE}  1. 规则类型为中转服务器${NC}"
-            echo -e "${BLUE}  2. 已启用负载均衡模式（轮询或IP哈希）${NC}"
-            echo -e "${BLUE}  3. 有多个目标服务器${NC}"
-            echo ""
-            echo -e "${YELLOW}如果您有多目标规则但未启用负载均衡：${NC}"
-            echo -e "${BLUE}  请先到 '1. 切换负载均衡模式' 开启负载均衡${NC}"
-            echo ""
-            read -p "按回车键返回..."
-            return
-        fi
-
-        echo ""
-        echo -e "${WHITE}注意: 故障转移功能会自动检测节点健康状态并动态调整负载均衡${NC}"
-        echo ""
-        read -p "请输入规则编号 [1-${#rule_ports[@]}] (或按回车返回): " choice
-
-        if [ -z "$choice" ]; then
-            return
-        fi
-
-        # 验证数字输入
-        if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt ${#rule_ports[@]} ]; then
-            echo -e "${RED}无效的规则编号${NC}"
-            read -p "按回车键继续..."
-            continue
-        fi
-
-        # 计算数组索引（从0开始）
-        local selected_index=$((choice - 1))
-        local selected_port="${rule_ports[$selected_index]}"
-        local rule_name="${rule_names[$selected_index]}"
-
-        # 切换故障转移状态
-        local current_status="${port_failover_status[$selected_port]}"
-        local new_status="true"
-        local action_text="开启"
-        local color="${GREEN}"
-
-        if [ "$current_status" = "true" ]; then
-            new_status="false"
-            action_text="关闭"
-            color="${RED}"
-        fi
-
-        # 直接切换状态，无需确认
-        echo -e "${BLUE}正在${action_text}故障转移功能...${NC}"
-
-        # 更新所有相关规则文件
-        local updated_count=0
-        for rule_file in "${RULES_DIR}"/rule-*.conf; do
-            if [ -f "$rule_file" ]; then
-                if read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$selected_port" ]; then
-                    # 更新故障转移状态
-                    if grep -q "^FAILOVER_ENABLED=" "$rule_file"; then
-                        sed -i "s/^FAILOVER_ENABLED=.*/FAILOVER_ENABLED=\"$new_status\"/" "$rule_file"
-                    else
-                        echo "FAILOVER_ENABLED=\"$new_status\"" >> "$rule_file"
-                    fi
-                    updated_count=$((updated_count + 1))
-                fi
-            fi
-        done
-
-        echo -e "${color}✓ 已更新 $updated_count 个规则文件的故障转移状态${NC}"
-
-        if [ "$new_status" = "true" ]; then
-            echo -e "${BLUE}故障转移参数:${NC}"
-            echo -e "  检查间隔: ${GREEN}4秒${NC}"
-            echo -e "  失败阈值: ${GREEN}连续2次${NC}"
-            echo -e "  成功阈值: ${GREEN}连续2次${NC}"
-            echo -e "  连接超时: ${GREEN}3秒${NC}"
-            echo -e "  恢复冷却: ${GREEN}120秒${NC}"
-        fi
-
-        # 重启服务以应用更改
-        echo -e "${YELLOW}正在重启服务以应用故障转移设置...${NC}"
-        service_restart
-
-        # 管理健康检查服务
-        if [ "$new_status" = "true" ]; then
-            echo -e "${BLUE}正在启动健康检查服务...${NC}"
-            start_health_check_service
-        else
-            # 检查是否还有其他规则启用了故障转移
-            local has_other_failover=false
-            for rule_file in "${RULES_DIR}"/rule-*.conf; do
-                if [ -f "$rule_file" ]; then
-                    if read_rule_file "$rule_file" && [ "$FAILOVER_ENABLED" = "true" ]; then
-                        has_other_failover=true
-                        break
-                    fi
-                fi
-            done
-
-            if [ "$has_other_failover" = false ]; then
-                echo -e "${BLUE}正在停止健康检查服务...${NC}"
-                stop_health_check_service
-            fi
-        fi
-
-        echo -e "${GREEN}✓ 故障转移设置已生效${NC}"
-        echo ""
-        read -p "按回车键继续..."
-        # 重新显示菜单以显示更新的状态
-        continue
-    done
-}
-
-# 配置监控服务管理
-create_config_monitor_service() {
-    local monitor_service="/etc/systemd/system/realm-config-monitor.service"
-    local monitor_script="/etc/realm/health/config_monitor.sh"
-
-    # 创建配置监控脚本
-    cat > "$monitor_script" << 'EOF'
-#!/bin/bash
-
-# 配置监控脚本 - 使用inotify监控配置更新请求
-MONITOR_FILE="/tmp/realm_config_update_needed"
-CONFIG_FILE="/etc/realm/config.json"
-
-
-
-# 主循环
-while true; do
-    # 等待配置更新请求
-    if command -v inotifywait >/dev/null 2>&1; then
-        # 使用inotify监控
-        inotifywait -e create -e moved_to /tmp/ 2>/dev/null | while read path action file; do
-            if [ "$file" = "realm_config_update_needed" ]; then
-                echo "$(date '+%Y-%m-%d %H:%M:%S') [MONITOR] 检测到配置更新请求"
-
-                # 查找主脚本
-                script_path=""
-                cache_file="/tmp/realm_path_cache"
-
-                # 检查缓存
-                if [ -f "$cache_file" ]; then
-                    cached_path=$(cat "$cache_file" 2>/dev/null)
-                    if [ -f "$cached_path" ]; then
-                        script_path="$cached_path"
-                    fi
-                fi
-
-                # 常见位置检查
-                if [ -z "$script_path" ]; then
-                    common_paths=(
-                        "/usr/local/bin/pf"
-                        "/usr/local/bin/xwPF.sh"
-                        "/root/xwPF.sh"
-                        "/opt/xwPF.sh"
-                        "/usr/bin/xwPF.sh"
-                        "/usr/sbin/xwPF.sh"
-                    )
-
-                    for path in "${common_paths[@]}"; do
-                        if [ -f "$path" ]; then
-                            echo "$path" > "$cache_file"
-                            script_path="$path"
-                            break
-                        fi
-                    done
-                fi
-
-                if [ -n "$script_path" ] && [ -f "$script_path" ]; then
-                    echo "$(date '+%Y-%m-%d %H:%M:%S') [MONITOR] 正在重新生成配置..."
-
-                    # 重新生成配置（直接调用脚本的配置生成功能）
-                    "$script_path" --generate-config-only >/dev/null 2>&1
-
-                    if [ -f "$CONFIG_FILE" ]; then
-                        echo "$(date '+%Y-%m-%d %H:%M:%S') [MONITOR] 正在重启realm服务..."
-                        systemctl restart realm >/dev/null 2>&1
-
-                        if [ $? -eq 0 ]; then
-                            echo "$(date '+%Y-%m-%d %H:%M:%S') [MONITOR] 配置更新成功"
-                        else
-                            echo "$(date '+%Y-%m-%d %H:%M:%S') [MONITOR] 服务重启失败"
-                        fi
-                    else
-                        echo "$(date '+%Y-%m-%d %H:%M:%S') [MONITOR] 配置生成失败"
-                    fi
-                else
-                    echo "$(date '+%Y-%m-%d %H:%M:%S') [MONITOR] 无法找到主脚本"
-                fi
-
-                # 删除标记文件
-                rm -f "$MONITOR_FILE"
-            fi
-        done
-    else
-        # 轮询检查
-        if [ -f "$MONITOR_FILE" ]; then
-            echo "$(date '+%Y-%m-%d %H:%M:%S') [MONITOR] 检测到配置更新请求"
-
-            # 查找主脚本
-            script_path=""
-            cache_file="/tmp/realm_path_cache"
-
-            # 检查缓存
-            if [ -f "$cache_file" ]; then
-                cached_path=$(cat "$cache_file" 2>/dev/null)
-                if [ -f "$cached_path" ]; then
-                    script_path="$cached_path"
-                fi
-            fi
-
-            # 常见位置检查
-            if [ -z "$script_path" ]; then
-                common_paths=(
-                    "/usr/local/bin/pf"
-                    "/usr/local/bin/xwPF.sh"
-                    "/root/xwPF.sh"
-                    "/opt/xwPF.sh"
-                    "/usr/bin/xwPF.sh"
-                    "/usr/sbin/xwPF.sh"
-                )
-
-                for path in "${common_paths[@]}"; do
-                    if [ -f "$path" ]; then
-                        echo "$path" > "$cache_file"
-                        script_path="$path"
-                        break
-                    fi
-                done
-            fi
-
-            if [ -n "$script_path" ] && [ -f "$script_path" ]; then
-                echo "$(date '+%Y-%m-%d %H:%M:%S') [MONITOR] 正在重新生成配置..."
-
-                # 重新生成配置（直接调用脚本的配置生成功能）
-                "$script_path" --generate-config-only >/dev/null 2>&1
-
-                if [ -f "$CONFIG_FILE" ]; then
-                    echo "$(date '+%Y-%m-%d %H:%M:%S') [MONITOR] 正在重启realm服务..."
-                    systemctl restart realm >/dev/null 2>&1
-
-                    if [ $? -eq 0 ]; then
-                        echo "$(date '+%Y-%m-%d %H:%M:%S') [MONITOR] 配置更新成功"
-                    else
-                        echo "$(date '+%Y-%m-%d %H:%M:%S') [MONITOR] 服务重启失败"
-                    fi
-                else
-                    echo "$(date '+%Y-%m-%d %H:%M:%S') [MONITOR] 配置生成失败"
-                fi
-            else
-                echo "$(date '+%Y-%m-%d %H:%M:%S') [MONITOR] 无法找到主脚本"
-            fi
-
-            # 删除标记文件
-            rm -f "$MONITOR_FILE"
-        fi
-
-        sleep 2
-    fi
-done
-EOF
-
-    chmod +x "$monitor_script"
-
-    # 创建systemd服务文件
-    cat > "$monitor_service" << EOF
-[Unit]
-Description=Realm Configuration Monitor Service
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=$monitor_script
-User=root
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=realm-config-monitor
-
-[Install]
-WantedBy=multi-user.target
-EOF
-}
-
-# 健康检查服务管理
-start_health_check_service() {
-    local health_dir="/etc/realm/health"
-    local health_script="/etc/realm/health/health_check.sh"
-    local health_timer="/etc/systemd/system/realm-health-check.timer"
-    local health_service="/etc/systemd/system/realm-health-check.service"
-
-    # 创建健康检查目录
-    mkdir -p "$health_dir"
-
-    # 创建健康检查脚本
-    cat > "$health_script" << 'EOF'
-#!/bin/bash
-
-# 健康检查脚本
-HEALTH_DIR="/etc/realm/health"
-RULES_DIR="/etc/realm/rules"
-LOCK_FILE="/var/lock/realm-health-check.lock"
-
-# 查找健康状态文件
-HEALTH_STATUS_FILE=""
-for path in "/etc/realm/health/health_status.conf" "/etc/realm/health_status.conf" "/var/lib/realm/health_status.conf"; do
-    if [ -f "$path" ]; then
-        HEALTH_STATUS_FILE="$path"
-        break
-    fi
-done
-
-# 如果找不到，使用默认路径
-if [ -z "$HEALTH_STATUS_FILE" ]; then
-    HEALTH_STATUS_FILE="$HEALTH_DIR/health_status.conf"
-fi
-
-# 获取文件锁
-exec 200>"$LOCK_FILE"
-if ! flock -n 200; then
-    echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO] 健康检查已在运行中，跳过本次检查"
-    exit 0
-fi
-
-# 健康检查函数（统一使用check_connectivity）
-check_connectivity() {
-    local target="$1"
-    local port="$2"
-    local timeout="${3:-3}"
-
-    # 使用nc检测连通性（netcat-openbsd已确保安装）
-    nc -z -w"$timeout" "$target" "$port" >/dev/null 2>&1
-    return $?
-}
-
-# 健康检查脚本专用的读取规则文件函数
-read_rule_file_for_health_check() {
-    local rule_file="$1"
-    if [ ! -f "$rule_file" ]; then
-        return 1
-    fi
-
-    # 清空变量
-    unset RULE_ID RULE_NAME RULE_ROLE LISTEN_PORT LISTEN_IP THROUGH_IP REMOTE_HOST REMOTE_PORT
-    unset FORWARD_TARGET SECURITY_LEVEL
-    unset TLS_SERVER_NAME TLS_CERT_PATH TLS_KEY_PATH WS_PATH WS_HOST
-    unset ENABLED BALANCE_MODE FAILOVER_ENABLED HEALTH_CHECK_INTERVAL
-    unset FAILURE_THRESHOLD SUCCESS_THRESHOLD CONNECTION_TIMEOUT
-    unset TARGET_STATES WEIGHTS CREATED_TIME
-
-    # 读取配置
-    source "$rule_file"
-    return 0
-}
-
-
-
-# 初始化健康状态文件
-if [ ! -f "$HEALTH_STATUS_FILE" ]; then
-    echo "# Realm健康状态文件" > "$HEALTH_STATUS_FILE"
-    echo "# 格式: RULE_ID|TARGET|STATUS|FAIL_COUNT|SUCCESS_COUNT|LAST_CHECK|FAILURE_START_TIME" >> "$HEALTH_STATUS_FILE"
-fi
-
-# 检查所有启用故障转移的规则
-config_changed=false
-current_time=$(date +%s)
-
-for rule_file in "$RULES_DIR"/rule-*.conf; do
-    if [ ! -f "$rule_file" ]; then
-        continue
-    fi
-
-    if ! read_rule_file_for_health_check "$rule_file"; then
-        continue
-    fi
-
-    # 只检查启用故障转移的中转规则
-    if [ "$RULE_ROLE" != "1" ] || [ "$ENABLED" != "true" ] || [ "$FAILOVER_ENABLED" != "true" ]; then
-        continue
-    fi
-
-    # 解析目标服务器
-    if [[ "$REMOTE_HOST" == *","* ]]; then
-        IFS=',' read -ra targets <<< "$REMOTE_HOST"
-    else
-        targets=("$REMOTE_HOST")
-    fi
-
-    # 检查每个目标
-    for target in "${targets[@]}"; do
-        target=$(echo "$target" | xargs)  # 去除空格
-        target_key="${RULE_ID}|${target}"
-
-        # 获取当前状态
-        status_line=$(grep "^${target_key}|" "$HEALTH_STATUS_FILE" 2>/dev/null)
-        if [ -n "$status_line" ]; then
-            IFS='|' read -r _ _ status fail_count success_count last_check failure_start_time <<< "$status_line"
-            # 兼容旧格式（没有failure_start_time字段）
-            if [ -z "$failure_start_time" ]; then
-                failure_start_time="$last_check"
-            fi
-        else
-            status="healthy"
-            fail_count=0
-            success_count=2
-            last_check=0
-            failure_start_time=0
-        fi
-
-        # 执行健康检查
-        if check_connectivity "$target" "$REMOTE_PORT" "${CONNECTION_TIMEOUT:-3}"; then
-            # 检查成功
-            success_count=$((success_count + 1))
-            fail_count=0
-
-            # 如果之前是故障状态，检查是否可以恢复
-            if [ "$status" = "failed" ] && [ "$success_count" -ge "${SUCCESS_THRESHOLD:-2}" ]; then
-                # 检查冷却期（基于故障开始时间）
-                cooldown_period=$((120))  # 120秒冷却期
-                if [ $((current_time - failure_start_time)) -ge "$cooldown_period" ]; then
-                    status="healthy"
-                    config_changed=true
-                    failure_start_time=0  # 重置故障开始时间
-                    echo "$(date '+%Y-%m-%d %H:%M:%S') [RECOVERY] 目标 $target:$REMOTE_PORT 已恢复健康"
-                fi
-            fi
-        else
-            # 检查失败
-            fail_count=$((fail_count + 1))
-            success_count=0
-
-            # 如果连续失败达到阈值，标记为故障
-            if [ "$status" = "healthy" ] && [ "$fail_count" -ge "${FAILURE_THRESHOLD:-2}" ]; then
-                status="failed"
-                config_changed=true
-                failure_start_time="$current_time"  # 记录故障开始时间
-                echo "$(date '+%Y-%m-%d %H:%M:%S') [FAILURE] 目标 $target:$REMOTE_PORT 已标记为故障"
-            fi
-        fi
-
-        # 更新状态文件（包含故障开始时间）
-        grep -v "^${target_key}|" "$HEALTH_STATUS_FILE" > "$HEALTH_STATUS_FILE.tmp" 2>/dev/null || true
-        echo "${target_key}|${status}|${fail_count}|${success_count}|${current_time}|${failure_start_time}" >> "$HEALTH_STATUS_FILE.tmp"
-        mv "$HEALTH_STATUS_FILE.tmp" "$HEALTH_STATUS_FILE"
-    done
-done
-
-# 如果配置有变化，重新生成配置并重启服务
-if [ "$config_changed" = true ]; then
-    echo "$(date '+%Y-%m-%d %H:%M:%S') [CONFIG] 检测到节点状态变化，正在更新配置..."
-
-    # 查找主脚本
-    script_path=""
-    cache_file="/tmp/realm_path_cache"
-
-    # 第一阶段：检查缓存
-    if [ -f "$cache_file" ]; then
-        cached_path=$(cat "$cache_file" 2>/dev/null)
-        if [ -f "$cached_path" ]; then
-            script_path="$cached_path"
-        fi
-    fi
-
-    # 第二阶段：常见位置直接检查
-    if [ -z "$script_path" ]; then
-        common_paths=(
-            "/usr/local/bin/pf"
-            "/usr/local/bin/xwPF.sh"
-            "/root/xwPF.sh"
-            "/opt/xwPF.sh"
-            "/usr/bin/xwPF.sh"
-            "/usr/sbin/xwPF.sh"
-        )
-
-        for path in "${common_paths[@]}"; do
-            if [ -f "$path" ]; then
-                echo "$path" > "$cache_file"
-                script_path="$path"
-                break
-            fi
-        done
-    fi
-
-    # 第三阶段：分区域限制深度搜索
-    if [ -z "$script_path" ]; then
-        search_dirs=("/etc" "/var" "/opt" "/usr" "/home" "/root")
-        for dir in "${search_dirs[@]}"; do
-            if [ -d "$dir" ]; then
-                found_path=$(timeout 30 find "$dir" -maxdepth 4 -name "xwPF.sh" -type f 2>/dev/null | head -1)
-                if [ -n "$found_path" ] && [ -f "$found_path" ]; then
-                    echo "$found_path" > "$cache_file"
-                    script_path="$found_path"
-                    break
-                fi
-            fi
-        done
-    fi
-
-    # 第四阶段：全系统搜索
-    if [ -z "$script_path" ]; then
-        found_path=$(timeout 60 find / -name "xwPF.sh" -type f 2>/dev/null | head -1)
-        if [ -n "$found_path" ] && [ -f "$found_path" ]; then
-            echo "$found_path" > "$cache_file"
-            script_path="$found_path"
-        fi
-    fi
-
-    # 验证是否找到脚本路径
-    if [ -z "$script_path" ] || [ ! -f "$script_path" ]; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S') [ERROR] 无法找到主脚本，跳过配置更新"
-        exit 1
-    fi
-
-    # 创建配置更新标记文件，让inotify服务处理
-    echo "$(date '+%Y-%m-%d %H:%M:%S') [CONFIG] 标记配置需要更新..."
-    # 先删除可能存在的文件，然后创建新文件，确保触发inotify事件
-    rm -f /tmp/realm_config_update_needed
-    echo "$(date '+%Y-%m-%d %H:%M:%S')" > /tmp/realm_config_update_needed
-
-    # 等待配置更新完成（最多30秒）
-    wait_count=0
-    while [ -f "/tmp/realm_config_update_needed" ] && [ $wait_count -lt 30 ]; do
-        sleep 1
-        wait_count=$((wait_count + 1))
-    done
-
-    if [ -f "/tmp/realm_config_update_needed" ]; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S') [WARNING] 配置更新超时，可能需要手动处理"
-    else
-        echo "$(date '+%Y-%m-%d %H:%M:%S') [CONFIG] 配置更新完成"
-    fi
-
-    echo "$(date '+%Y-%m-%d %H:%M:%S') [CONFIG] 配置更新完成"
-fi
-
-echo "$(date '+%Y-%m-%d %H:%M:%S') [INFO] 健康检查完成"
-EOF
-
-    chmod +x "$health_script"
-
-    # 创建systemd服务文件
-    cat > "$health_service" << EOF
-[Unit]
-Description=Realm Health Check Service
-After=network.target
-
-[Service]
-Type=oneshot
-ExecStart=$health_script
-User=root
-WorkingDirectory=/etc/realm
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=realm-health
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    # 创建systemd定时器
-    cat > "$health_timer" << EOF
-[Unit]
-Description=Realm Health Check Timer
-Requires=realm-health-check.service
-
-[Timer]
-OnBootSec=1min
-OnUnitActiveSec=1min
-AccuracySec=1s
-
-[Install]
-WantedBy=timers.target
-EOF
-
-    # 创建配置监控服务
-    create_config_monitor_service
-
-    # 创建并启动清理定时器
-    create_simple_cleanup_timer
-
-    # 启用并启动定时器
-    systemctl daemon-reload
-    systemctl enable realm-health-check.timer >/dev/null 2>&1
-    systemctl start realm-health-check.timer >/dev/null 2>&1
-    systemctl enable realm-config-monitor.service >/dev/null 2>&1
-    systemctl start realm-config-monitor.service >/dev/null 2>&1
-
-    echo -e "${GREEN}✓ 健康检查服务已启动${NC}"
-}
 
 # 创建最简单的文件清理定时器
 create_simple_cleanup_timer() {
@@ -7797,35 +7126,6 @@ EOF
     systemctl start realm-cleanup.timer >/dev/null 2>&1
 }
 
-stop_health_check_service() {
-    # 停止并禁用健康检查服务
-    systemctl stop realm-health-check.timer >/dev/null 2>&1
-    systemctl disable realm-health-check.timer >/dev/null 2>&1
-    systemctl stop realm-health-check.service >/dev/null 2>&1
-    systemctl disable realm-health-check.service >/dev/null 2>&1
-
-    # 停止并禁用配置监控服务
-    systemctl stop realm-config-monitor.service >/dev/null 2>&1
-    systemctl disable realm-config-monitor.service >/dev/null 2>&1
-
-    # 停止并禁用清理定时器
-    systemctl stop realm-cleanup.timer >/dev/null 2>&1
-    systemctl disable realm-cleanup.timer >/dev/null 2>&1
-
-    # 删除服务文件
-    rm -f "/etc/systemd/system/realm-health-check.timer"
-    rm -f "/etc/systemd/system/realm-health-check.service"
-    rm -f "/etc/systemd/system/realm-config-monitor.service"
-    rm -f "/etc/systemd/system/realm-cleanup.timer"
-    rm -f "/etc/systemd/system/realm-cleanup.service"
-    rm -f "/usr/local/bin/realm-health-check.sh"
-    rm -f "/etc/realm/health/config_monitor.sh"
-    rm -rf "/etc/realm/health"
-
-    systemctl daemon-reload
-
-    echo -e "${GREEN}✓ 健康检查服务已停止${NC}"
-}
 
 # 权重配置管理菜单
 weight_management_menu() {
