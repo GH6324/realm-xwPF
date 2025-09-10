@@ -16,11 +16,23 @@ get_gmt8_time() {
     TZ='GMT-8' date "$@"
 }
 
-# 生成新的规则ID（复制自主脚本）
+# 生成新的规则ID(主脚本)
 generate_rule_id() {
     local max_id=0
+    # 检查现有规则目录
     if [ -d "$RULES_DIR" ]; then
         for rule_file in "${RULES_DIR}"/rule-*.conf; do
+            if [ -f "$rule_file" ]; then
+                local id=$(basename "$rule_file" | sed 's/rule-\([0-9]*\)\.conf/\1/')
+                if [ "$id" -gt "$max_id" ]; then
+                    max_id=$id
+                fi
+            fi
+        done
+    fi
+    # 检查临时输出目录（避免导入时ID重复）
+    if [ -d "$OUTPUT_DIR" ]; then
+        for rule_file in "${OUTPUT_DIR}"/rule-*.conf; do
             if [ -f "$rule_file" ]; then
                 local id=$(basename "$rule_file" | sed 's/rule-\([0-9]*\)\.conf/\1/')
                 if [ "$id" -gt "$max_id" ]; then
@@ -157,6 +169,29 @@ process_json() {
             fi
         fi
 
+        # 为多目标配置设置负载均衡参数
+        local rule_balance_mode="off"
+        local rule_target_states=""
+        local rule_weights=""
+
+        if [ ${#all_targets[@]} -gt 1 ]; then
+            # 多目标时使用负载均衡配置
+            rule_balance_mode="$balance_mode"
+            # 设置TARGET_STATES为所有目标的逗号分隔列表
+            rule_target_states=$(IFS=','; echo "${all_targets[*]}")
+            # 设置权重
+            if [ -n "$weights" ]; then
+                rule_weights="$weights"
+            else
+                # 默认权重：所有目标权重为1
+                local default_weights=()
+                for ((j=0; j<${#all_targets[@]}; j++)); do
+                    default_weights+=("1")
+                done
+                rule_weights=$(IFS=','; echo "${default_weights[*]}")
+            fi
+        fi
+
         # 为每个目标创建独立的规则文件
         local target_index=0
         for target in "${all_targets[@]}"; do
@@ -166,23 +201,6 @@ process_json() {
             # 解析目标地址和端口
             local target_host="${target%:*}"
             local target_port="${target##*:}"
-
-            # 为多目标配置设置负载均衡
-            local rule_balance_mode="off"
-            local rule_weights=""
-            if [ ${#all_targets[@]} -gt 1 ]; then
-                # 多目标时使用负载均衡配置
-                rule_balance_mode="$balance_mode"
-                if [ -n "$weights" ]; then
-                    # 提取当前目标的权重
-                    IFS=',' read -ra weight_array <<< "$weights"
-                    if [ "$target_index" -lt ${#weight_array[@]} ]; then
-                        rule_weights="${weight_array[$target_index]}"
-                    else
-                        rule_weights="1"  # 默认权重
-                    fi
-                fi
-            fi
 
             # 创建规则文件（使用主脚本的标准格式）
             local rule_file="$OUTPUT_DIR/rule-$rule_id.conf"
@@ -200,7 +218,7 @@ RULE_NOTE=""
 
 # 负载均衡配置
 BALANCE_MODE="$rule_balance_mode"
-TARGET_STATES=""
+TARGET_STATES="$rule_target_states"
 WEIGHTS="$rule_weights"
 
 # 故障转移配置
