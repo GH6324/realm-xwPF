@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 脚本版本
-SCRIPT_VERSION="v2.1.0"
+SCRIPT_VERSION="v2.1.1"
 
 # realm版本,备用 & 自动更新
 REALM_VERSION="v2.9.2"
