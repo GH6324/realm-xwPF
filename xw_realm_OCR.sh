@@ -253,6 +253,7 @@ process_json() {
 
         # 解析transport参数
         local transport_result=$(parse_transport_config "$transport_to_parse" "$rule_role")
+        local security_level tls_server_name ws_path ws_host
         IFS='|' read -r security_level tls_server_name ws_path ws_host <<< "$transport_result"
 
         # 收集所有目标地址（主地址 + 额外地址）
@@ -280,37 +281,38 @@ process_json() {
             fi
         fi
 
-        # 为多目标配置设置负载均衡参数
-        local rule_balance_mode="off"
-        local rule_target_states=""
-        local rule_weights=""
+        # 为每个目标创建独立的规则文件（与主脚本兼容）
+        local target_index=0
+        for target in "${all_targets[@]}"; do
+            local rule_id=$(generate_rule_id)
+            local rule_file="$OUTPUT_DIR/rule-$rule_id.conf"
 
-        if [ ${#all_targets[@]} -gt 1 ]; then
-            # 多目标时使用负载均衡配置
-            rule_balance_mode="$balance_mode"
-            # 设置TARGET_STATES为所有目标的逗号分隔列表
-            rule_target_states=$(IFS=','; echo "${all_targets[*]}")
-            # 设置权重
-            if [ -n "$weights" ]; then
-                rule_weights="$weights"
-            else
-                # 默认权重：所有目标权重为1
-                local default_weights=()
-                for ((j=0; j<${#all_targets[@]}; j++)); do
-                    default_weights+=("1")
-                done
-                rule_weights=$(IFS=','; echo "${default_weights[*]}")
+            # 解析目标地址和端口
+            local target_host="${target%:*}"
+            local target_port="${target##*:}"
+
+            # 设置负载均衡参数（多目标时才设置）
+            local rule_balance_mode="off"
+            local rule_target_states=""
+            local rule_weights=""
+
+            if [ ${#all_targets[@]} -gt 1 ]; then
+                # 多目标时设置负载均衡配置
+                rule_balance_mode="$balance_mode"
+                # 设置TARGET_STATES为所有目标的逗号分隔列表
+                rule_target_states=$(IFS=','; echo "${all_targets[*]}")
+                # 设置权重
+                if [ -n "$weights" ]; then
+                    rule_weights="$weights"
+                else
+                    # 默认权重：所有目标权重为1
+                    local default_weights=()
+                    for ((j=0; j<${#all_targets[@]}; j++)); do
+                        default_weights+=("1")
+                    done
+                    rule_weights=$(IFS=','; echo "${default_weights[*]}")
+                fi
             fi
-        fi
-
-        # 创建单个规则文件（支持负载均衡）
-        local rule_id=$(generate_rule_id)
-        local rule_file="$OUTPUT_DIR/rule-$rule_id.conf"
-
-        # 使用第一个目标作为主目标
-        local main_target="${all_targets[0]}"
-        local target_host="${main_target%:*}"
-        local target_port="${main_target##*:}"
 
             cat > "$rule_file" << RULE_EOF
 RULE_ID=$rule_id
@@ -342,9 +344,9 @@ MPTCP_MODE="off"
 PROXY_MODE="off"
 RULE_EOF
 
-        if [ "$rule_role" = "1" ]; then
-            # 中转服务器字段（使用主脚本的标准格式）
-            cat >> "$rule_file" << RULE_EOF
+            if [ "$rule_role" = "1" ]; then
+                # 中转服务器字段（使用主脚本的标准格式）
+                cat >> "$rule_file" << RULE_EOF
 
 # 中转服务器配置
 THROUGH_IP="::"
@@ -356,28 +358,29 @@ TLS_KEY_PATH=""
 WS_PATH="$ws_path"
 WS_HOST="$ws_host"
 RULE_EOF
-        else
-            # 落地服务器字段（使用主脚本的标准格式）
-            # 对于落地服务器，FORWARD_TARGET使用第一个目标
-            cat >> "$rule_file" << RULE_EOF
+            else
+                # 落地服务器字段（使用主脚本的标准格式）
+                cat >> "$rule_file" << RULE_EOF
 
 # 落地服务器配置
-FORWARD_TARGET="$main_target"
+FORWARD_TARGET="$target"
 TLS_SERVER_NAME="$tls_server_name"
 TLS_CERT_PATH=""
 TLS_KEY_PATH=""
 WS_PATH="$ws_path"
 WS_HOST="$ws_host"
 RULE_EOF
-        fi
+            fi
 
-        # 构建显示信息
-        local targets_display="$target_host:$target_port"
-        if [ ${#all_targets[@]} -gt 1 ]; then
-            targets_display="$targets_display + $((${#all_targets[@]} - 1))个额外目标"
-        fi
+            # 构建显示信息
+            local targets_display="$target_host:$target_port"
+            if [ ${#all_targets[@]} -gt 1 ]; then
+                targets_display="$targets_display (${target_index}/${#all_targets[@]})"
+            fi
 
-        echo "✓ 生成规则文件: rule-$rule_id.conf ($rule_name → $targets_display)"
+            echo "✓ 生成规则文件: rule-$rule_id.conf ($rule_name → $targets_display)"
+            target_index=$((target_index + 1))
+        done
     done
 
     return 0
@@ -467,7 +470,7 @@ for rule_file in "$OUTPUT_DIR"/rule-*.conf; do
         TLS_SERVER_NAME="$TLS_SERVER_NAME"
 
         # 使用主脚本的get_security_display函数显示传输模式
-        local third_param=""
+        third_param=""
         case "$SECURITY_LEVEL" in
             "ws"|"ws_tls_self"|"ws_tls_ca")
                 third_param="$WS_HOST"
@@ -476,12 +479,12 @@ for rule_file in "$OUTPUT_DIR"/rule-*.conf; do
                 third_param="$TLS_SERVER_NAME"
                 ;;
         esac
-        local transport_display=$(get_security_display "$SECURITY_LEVEL" "$WS_PATH" "$third_param")
+        transport_display=$(get_security_display "$SECURITY_LEVEL" "$WS_PATH" "$third_param")
 
         # 构建负载均衡显示
-        local balance_display=""
+        balance_display=""
         if [ "$BALANCE_MODE" != "off" ] && [ -n "$TARGET_STATES" ]; then
-            local target_count=$(echo "$TARGET_STATES" | tr ',' '\n' | wc -l)
+            target_count=$(echo "$TARGET_STATES" | tr ',' ' ' | wc -w)
             case "$BALANCE_MODE" in
                 "roundrobin") balance_display=" [轮询负载均衡:${target_count}个目标" ;;
                 "iphash") balance_display=" [IP哈希负载均衡:${target_count}个目标" ;;
