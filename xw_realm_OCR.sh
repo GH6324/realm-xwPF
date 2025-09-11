@@ -164,20 +164,42 @@ parse_transport_config() {
 
         # 根据组合确定security_level
         if [ "$has_ws" = true ] && [ "$has_tls" = true ]; then
-            # 检查是否为自签证书（包含insecure）
+            # 检查是否为自签证书
             if echo "$transport" | grep -q "insecure"; then
+                # 中转服务器：有insecure关键字 → 自签证书
                 security_level="ws_tls_self"
-            else
+            elif echo "$transport" | grep -q "servername="; then
+                # 落地服务器：有servername参数 → 自签证书
+                security_level="ws_tls_self"
+            elif echo "$transport" | grep -q "cert=.*key="; then
+                # 落地服务器：有cert和key参数 → CA证书
                 security_level="ws_tls_ca"
+            elif [ "$role" = "1" ]; then
+                # 中转服务器：没有insecure → CA证书
+                security_level="ws_tls_ca"
+            else
+                # 落地服务器：默认自签证书
+                security_level="ws_tls_self"
             fi
         elif [ "$has_ws" = true ]; then
             security_level="ws"
         elif [ "$has_tls" = true ]; then
-            # 检查是否为自签证书（包含insecure）
+            # 检查是否为自签证书
             if echo "$transport" | grep -q "insecure"; then
+                # 中转服务器：有insecure关键字 → 自签证书
                 security_level="tls_self"
-            else
+            elif echo "$transport" | grep -q "servername="; then
+                # 落地服务器：有servername参数 → 自签证书
+                security_level="tls_self"
+            elif echo "$transport" | grep -q "cert=.*key="; then
+                # 落地服务器：有cert和key参数 → CA证书
                 security_level="tls_ca"
+            elif [ "$role" = "1" ]; then
+                # 中转服务器：没有insecure → CA证书
+                security_level="tls_ca"
+            else
+                # 落地服务器：默认自签证书
+                security_level="tls_self"
             fi
         fi
     fi
@@ -209,13 +231,18 @@ process_json() {
     for i in $(seq 0 $((endpoint_count - 1))); do
         local endpoint=$(jq ".endpoints[$i]" "$json_file")
 
+        # 重置变量（避免污染）
+        local listen="" remote="" extra_remotes="" balance="" listen_transport="" remote_transport=""
+        local rule_role="" rule_name="" listen_ip="" listen_port="" remote_host="" remote_port=""
+        local transport_to_parse="" security_level="" tls_server_name="" ws_path="" ws_host=""
+
         # 提取基本信息
-        local listen=$(echo "$endpoint" | jq -r '.listen // empty')
-        local remote=$(echo "$endpoint" | jq -r '.remote // empty')
-        local extra_remotes=$(echo "$endpoint" | jq -r '.extra_remotes[]? // empty' | tr '\n' ',' | sed 's/,$//')
-        local balance=$(echo "$endpoint" | jq -r '.balance // empty')
-        local listen_transport=$(echo "$endpoint" | jq -r '.listen_transport // empty')
-        local remote_transport=$(echo "$endpoint" | jq -r '.remote_transport // empty')
+        listen=$(echo "$endpoint" | jq -r '.listen // empty')
+        remote=$(echo "$endpoint" | jq -r '.remote // empty')
+        extra_remotes=$(echo "$endpoint" | jq -r '.extra_remotes[]? // empty' | tr '\n' ',' | sed 's/,$//')
+        balance=$(echo "$endpoint" | jq -r '.balance // empty')
+        listen_transport=$(echo "$endpoint" | jq -r '.listen_transport // empty')
+        remote_transport=$(echo "$endpoint" | jq -r '.remote_transport // empty')
 
         if [ -z "$listen" ] || [ -z "$remote" ]; then
             echo "警告: endpoint $i 缺少必要字段，跳过"
