@@ -48,6 +48,9 @@ generate_rule_id() {
 CONFIG_DIR="/etc/realm"
 RULES_DIR="${CONFIG_DIR}/rules"
 
+# 默认SNI域名（与主脚本保持一致）
+DEFAULT_SNI_DOMAIN="www.tesla.com"
+
 # 检查参数
 if [ -n "$1" ]; then
     RULES_DIR="$1"
@@ -86,6 +89,102 @@ echo -e "${YELLOW}正在识别配置文件...${NC}"
 
 # 检查文件格式
 file_ext=$(echo "$CONFIG_FILE" | awk -F. '{print tolower($NF)}')
+
+# 获取安全级别显示文本（与主脚本完全一致）
+get_security_display() {
+    local security_level="$1"
+    local ws_path="$2"
+    local tls_server_name="$3"  # 在ws模式下作为host，在tls模式下作为SNI
+
+    case "$security_level" in
+        "standard")
+            echo "默认传输"
+            ;;
+        "ws")
+            echo "ws (host: $tls_server_name) (路径: $ws_path)"
+            ;;
+        "tls_self")
+            local display_sni="${tls_server_name:-$DEFAULT_SNI_DOMAIN}"
+            echo "TLS自签证书 (SNI: $display_sni)"
+            ;;
+        "tls_ca")
+            echo "TLS CA证书 (域名: $tls_server_name)"
+            ;;
+        "ws_tls_self")
+            local display_sni="${TLS_SERVER_NAME:-$DEFAULT_SNI_DOMAIN}"
+            echo "wss 自签证书 (host: $tls_server_name) (路径: $ws_path) (SNI: $display_sni)"
+            ;;
+        "ws_tls_ca")
+            local display_sni="${TLS_SERVER_NAME:-$DEFAULT_SNI_DOMAIN}"
+            echo "wss CA证书 (host: $tls_server_name) (路径: $ws_path) (SNI: $display_sni)"
+            ;;
+        "ws_"*)
+            echo "$security_level (路径: $ws_path)"
+            ;;
+        *)
+            echo "$security_level"
+            ;;
+    esac
+}
+
+# 解析transport配置
+parse_transport_config() {
+    local transport="$1"
+    local role="$2"  # 1=中转服务器, 2=落地服务器
+
+    # 初始化返回值
+    local security_level="standard"
+    local tls_server_name=""
+    local ws_path=""
+    local ws_host=""
+
+    if [ -n "$transport" ]; then
+        # 检查是否包含WebSocket
+        local has_ws=false
+        if echo "$transport" | grep -q "ws;"; then
+            has_ws=true
+            # 提取WebSocket参数
+            ws_host=$(echo "$transport" | grep -oP 'host=\K[^;]+' || echo "")
+            ws_path=$(echo "$transport" | grep -oP 'path=\K[^;]+' || echo "")
+        fi
+
+        # 检查是否包含TLS
+        local has_tls=false
+        if echo "$transport" | grep -q "tls"; then
+            has_tls=true
+            # 提取TLS参数
+            if [ "$role" = "1" ]; then
+                # 中转服务器：从sni参数提取
+                tls_server_name=$(echo "$transport" | grep -oP 'sni=\K[^;]+' || echo "")
+            else
+                # 落地服务器：从servername参数提取
+                tls_server_name=$(echo "$transport" | grep -oP 'servername=\K[^;]+' || echo "")
+            fi
+        fi
+
+        # 根据组合确定security_level
+        if [ "$has_ws" = true ] && [ "$has_tls" = true ]; then
+            # 检查是否为自签证书（包含insecure）
+            if echo "$transport" | grep -q "insecure"; then
+                security_level="ws_tls_self"
+            else
+                security_level="ws_tls_ca"
+            fi
+        elif [ "$has_ws" = true ]; then
+            security_level="ws"
+        elif [ "$has_tls" = true ]; then
+            # 检查是否为自签证书（包含insecure）
+            if echo "$transport" | grep -q "insecure"; then
+                security_level="tls_self"
+            else
+                security_level="tls_ca"
+            fi
+        fi
+    fi
+
+    # 返回解析结果（用|分隔）
+    echo "$security_level|$tls_server_name|$ws_path|$ws_host"
+}
 
 # 处理JSON格式
 process_json() {
@@ -144,6 +243,18 @@ process_json() {
         fi
         # 中转服务器保持原始监听IP
 
+        # 解析transport配置
+        local transport_to_parse=""
+        if [ "$rule_role" = "1" ]; then
+            transport_to_parse="$remote_transport"
+        else
+            transport_to_parse="$listen_transport"
+        fi
+
+        # 解析transport参数
+        local transport_result=$(parse_transport_config "$transport_to_parse" "$rule_role")
+        IFS='|' read -r security_level tls_server_name ws_path ws_host <<< "$transport_result"
+
         # 收集所有目标地址（主地址 + 额外地址）
         local all_targets=("$remote")
         if [ -n "$extra_remotes" ]; then
@@ -192,24 +303,20 @@ process_json() {
             fi
         fi
 
-        # 为每个目标创建独立的规则文件
-        local target_index=0
-        for target in "${all_targets[@]}"; do
-            # 使用主脚本的标准规则ID生成函数
-            local rule_id=$(generate_rule_id)
+        # 创建单个规则文件（支持负载均衡）
+        local rule_id=$(generate_rule_id)
+        local rule_file="$OUTPUT_DIR/rule-$rule_id.conf"
 
-            # 解析目标地址和端口
-            local target_host="${target%:*}"
-            local target_port="${target##*:}"
-
-            # 创建规则文件（使用主脚本的标准格式）
-            local rule_file="$OUTPUT_DIR/rule-$rule_id.conf"
+        # 使用第一个目标作为主目标
+        local main_target="${all_targets[0]}"
+        local target_host="${main_target%:*}"
+        local target_port="${main_target##*:}"
 
             cat > "$rule_file" << RULE_EOF
 RULE_ID=$rule_id
 RULE_NAME="$rule_name"
 RULE_ROLE="$rule_role"
-SECURITY_LEVEL="standard"
+SECURITY_LEVEL="$security_level"
 LISTEN_PORT="$listen_port"
 LISTEN_IP="$listen_ip"
 ENABLED="true"
@@ -235,37 +342,42 @@ MPTCP_MODE="off"
 PROXY_MODE="off"
 RULE_EOF
 
-            if [ "$rule_role" = "1" ]; then
-                # 中转服务器字段（使用主脚本的标准格式）
-                cat >> "$rule_file" << RULE_EOF
+        if [ "$rule_role" = "1" ]; then
+            # 中转服务器字段（使用主脚本的标准格式）
+            cat >> "$rule_file" << RULE_EOF
 
 # 中转服务器配置
 THROUGH_IP="::"
 REMOTE_HOST="$target_host"
 REMOTE_PORT="$target_port"
-TLS_SERVER_NAME=""
+TLS_SERVER_NAME="$tls_server_name"
 TLS_CERT_PATH=""
 TLS_KEY_PATH=""
-WS_PATH=""
-WS_HOST=""
+WS_PATH="$ws_path"
+WS_HOST="$ws_host"
 RULE_EOF
-            else
-                # 落地服务器字段（使用主脚本的标准格式）
-                cat >> "$rule_file" << RULE_EOF
+        else
+            # 落地服务器字段（使用主脚本的标准格式）
+            # 对于落地服务器，FORWARD_TARGET使用第一个目标
+            cat >> "$rule_file" << RULE_EOF
 
 # 落地服务器配置
-FORWARD_TARGET="$target"
-TLS_SERVER_NAME=""
+FORWARD_TARGET="$main_target"
+TLS_SERVER_NAME="$tls_server_name"
 TLS_CERT_PATH=""
 TLS_KEY_PATH=""
-WS_PATH=""
-WS_HOST=""
+WS_PATH="$ws_path"
+WS_HOST="$ws_host"
 RULE_EOF
-            fi
+        fi
 
-            echo "✓ 生成规则文件: rule-$rule_id.conf ($rule_name → $target_host:$target_port)"
-            target_index=$((target_index + 1))
-        done
+        # 构建显示信息
+        local targets_display="$target_host:$target_port"
+        if [ ${#all_targets[@]} -gt 1 ]; then
+            targets_display="$targets_display + $((${#all_targets[@]} - 1))个额外目标"
+        fi
+
+        echo "✓ 生成规则文件: rule-$rule_id.conf ($rule_name → $targets_display)"
     done
 
     return 0
@@ -350,12 +462,45 @@ echo -e "${BLUE}识别到 $rule_count 个转发规则:${NC}"
 for rule_file in "$OUTPUT_DIR"/rule-*.conf; do
     if [ -f "$rule_file" ]; then
         source "$rule_file"
+
+        # 设置全局变量TLS_SERVER_NAME（ws_tls模式需要）
+        TLS_SERVER_NAME="$TLS_SERVER_NAME"
+
+        # 使用主脚本的get_security_display函数显示传输模式
+        local third_param=""
+        case "$SECURITY_LEVEL" in
+            "ws"|"ws_tls_self"|"ws_tls_ca")
+                third_param="$WS_HOST"
+                ;;
+            *)
+                third_param="$TLS_SERVER_NAME"
+                ;;
+        esac
+        local transport_display=$(get_security_display "$SECURITY_LEVEL" "$WS_PATH" "$third_param")
+
+        # 构建负载均衡显示
+        local balance_display=""
+        if [ "$BALANCE_MODE" != "off" ] && [ -n "$TARGET_STATES" ]; then
+            local target_count=$(echo "$TARGET_STATES" | tr ',' '\n' | wc -l)
+            case "$BALANCE_MODE" in
+                "roundrobin") balance_display=" [轮询负载均衡:${target_count}个目标" ;;
+                "iphash") balance_display=" [IP哈希负载均衡:${target_count}个目标" ;;
+                *) balance_display=" [${BALANCE_MODE}负载均衡:${target_count}个目标" ;;
+            esac
+            if [ -n "$WEIGHTS" ]; then
+                balance_display="${balance_display},权重:$WEIGHTS"
+            fi
+            balance_display="${balance_display}]"
+        fi
+
         if [ "$RULE_ROLE" = "1" ]; then
             # 中转服务器
             echo -e "  • ${GREEN}$RULE_NAME${NC}: $LISTEN_PORT → $REMOTE_HOST:$REMOTE_PORT"
+            echo -e "    传输模式: ${YELLOW}$transport_display${NC}$balance_display"
         else
             # 落地服务器
             echo -e "  • ${GREEN}$RULE_NAME${NC}: $LISTEN_PORT → $FORWARD_TARGET"
+            echo -e "    传输模式: ${YELLOW}$transport_display${NC}$balance_display"
         fi
     fi
 done
