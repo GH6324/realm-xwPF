@@ -3,7 +3,7 @@
 set -euo pipefail
 
 # 全局变量
-readonly SCRIPT_VERSION="1.1.0"
+readonly SCRIPT_VERSION="1.1.1"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -288,7 +288,7 @@ create_traffic_snapshot() {
         local output_bytes=${traffic_data[1]}
 
         # 创建分离的快照文件
-        if [[ "$port" =~ ^[0-9]+-[0-9]+$ ]]; then
+        if is_port_range "$port"; then
             # 端口段处理：将-替换为_用于文件名
             local port_safe=$(echo "$port" | tr '-' '_')
             local snapshot_file="$SNAPSHOT_DIR/port_${port_safe}_${period}_${time_key}.json"
@@ -334,7 +334,7 @@ get_period_traffic() {
     esac
 
     # 查找对应的快照文件
-    if [[ "$port" =~ ^[0-9]+-[0-9]+$ ]]; then
+    if is_port_range "$port"; then
         # 端口段处理：将-替换为_用于文件名
         local port_safe=$(echo "$port" | tr '-' '_')
         local snapshot_file="$SNAPSHOT_DIR/port_${port_safe}_${period}_${time_key}.json"
@@ -414,7 +414,7 @@ get_period_traffic_cached() {
     esac
 
     # 查找对应的快照文件
-    if [[ "$port" =~ ^[0-9]+-[0-9]+$ ]]; then
+    if is_port_range "$port"; then
         # 端口段处理：将-替换为_用于文件名
         local port_safe=$(echo "$port" | tr '-' '_')
         local snapshot_file="$SNAPSHOT_DIR/port_${port_safe}_${period}_${time_key}.json"
@@ -648,7 +648,7 @@ parse_port_range_input() {
     for part in "${PARTS[@]}"; do
         part=$(echo "$part" | tr -d ' ')  # 去除空格
 
-        if [[ "$part" =~ ^[0-9]+-[0-9]+$ ]]; then
+        if is_port_range "$part"; then
             # 端口段格式：100-200，作为一个整体处理
             local start_port=$(echo "$part" | cut -d'-' -f1)
             local end_port=$(echo "$part" | cut -d'-' -f2)
@@ -716,7 +716,7 @@ get_port_traffic() {
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
 
     # 检查是否为端口段
-    if [[ "$port" =~ ^[0-9]+-[0-9]+$ ]]; then
+    if is_port_range "$port"; then
         # 端口段处理
         local port_safe=$(echo "$port" | tr '-' '_')
 
@@ -870,6 +870,71 @@ parse_size_to_bytes() {
 # 获取守护端口列表
 get_active_ports() {
     jq -r '.ports | keys[]' "$CONFIG_FILE" 2>/dev/null | sort -n
+}
+
+# 检查是否为端口段
+is_port_range() {
+    local port=$1
+    [[ "$port" =~ ^[0-9]+-[0-9]+$ ]]
+}
+
+# 生成端口段标记值（确定性算法）
+generate_port_range_mark() {
+    local port_range=$1
+    local start_port=$(echo "$port_range" | cut -d'-' -f1)
+    local end_port=$(echo "$port_range" | cut -d'-' -f2)
+    echo $(( (start_port * 1000 + end_port) % 65536 ))
+}
+
+# 计算TC burst大小（统一逻辑）
+calculate_tc_burst() {
+    local base_rate=$1  # Mbps
+    local rate_bytes_per_sec=$((base_rate * 1000000 / 8))
+    local burst_by_formula=$((rate_bytes_per_sec / 20))  # 1/20秒的数据量 ≈ 50ms
+    local min_burst=$((2 * 1500))                        # 2个MTU = 3000字节
+
+    # 取两者最大值
+    if [ $burst_by_formula -gt $min_burst ]; then
+        echo $burst_by_formula
+    else
+        echo $min_burst
+    fi
+}
+
+# 格式化burst大小为tc可识别格式
+format_tc_burst() {
+    local burst_bytes=$1
+    if [ $burst_bytes -lt 1024 ]; then
+        echo "${burst_bytes}"
+    elif [ $burst_bytes -lt 1048576 ]; then
+        echo "$((burst_bytes / 1024))k"
+    else
+        echo "$((burst_bytes / 1048576))m"
+    fi
+}
+
+# 解析TC限制速率为Mbps（统一逻辑）
+parse_tc_rate_to_mbps() {
+    local total_limit=$1
+    if [[ "$total_limit" =~ gbit$ ]]; then
+        local rate=$(echo "$total_limit" | sed 's/gbit$//')
+        echo $((rate * 1000))
+    else
+        echo $(echo "$total_limit" | sed 's/mbit$//')
+    fi
+}
+
+# 生成TC class ID（统一逻辑）
+generate_tc_class_id() {
+    local port=$1
+    if is_port_range "$port"; then
+        # 端口段：使用标记值生成class_id，避免与单端口冲突
+        local mark_id=$(generate_port_range_mark "$port")
+        echo "1:$(printf '%x' $((0x2000 + mark_id)))"
+    else
+        # 单端口：使用端口号生成class_id
+        echo "1:$(printf '%x' $((0x1000 + port)))"
+    fi
 }
 
 # 获取端口总流量
@@ -1249,7 +1314,7 @@ remove_port_monitoring() {
             update_config "del(.ports.\"$port\")"
 
             # 5. 删除对应的所有快照文件
-            if [[ "$port" =~ ^[0-9]+-[0-9]+$ ]]; then
+            if is_port_range "$port"; then
                 # 端口段处理：将-替换为_用于文件名
                 local port_safe=$(echo "$port" | tr '-' '_')
                 rm -f "$SNAPSHOT_DIR/port_${port_safe}_daily_"*.json 2>/dev/null || true
@@ -1289,7 +1354,7 @@ remove_port_monitoring() {
         # 清理连接跟踪状态（确保现有连接也不受限制）
         echo "正在清理网络状态..."
         for port in "${ports_to_delete[@]}"; do
-            if [[ "$port" =~ ^[0-9]+-[0-9]+$ ]]; then
+            if is_port_range "$port"; then
                 # 端口段：清理整个范围
                 local start_port=$(echo "$port" | cut -d'-' -f1)
                 local end_port=$(echo "$port" | cut -d'-' -f2)
@@ -1329,24 +1394,25 @@ add_nftables_rules() {
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
 
     # 检查是否为端口段
-    if [[ "$port" =~ ^[0-9]+-[0-9]+$ ]]; then
+    if is_port_range "$port"; then
         # 端口段处理
         local port_safe=$(echo "$port" | tr '-' '_')  # 将-替换为_用于计数器名称
+        local mark_id=$(generate_port_range_mark "$port")
 
         # 添加命名计数器 - 端口段使用统一计数器
         nft add counter $family $table_name "port_${port_safe}_in" 2>/dev/null || true
         nft add counter $family $table_name "port_${port_safe}_out" 2>/dev/null || true
 
-        # 使用nftables原生端口段语法
-        nft add rule $family $table_name input tcp dport $port counter name "port_${port_safe}_in" accept
-        nft add rule $family $table_name input udp dport $port counter name "port_${port_safe}_in" accept
-        nft add rule $family $table_name forward tcp dport $port counter name "port_${port_safe}_in" accept
-        nft add rule $family $table_name forward udp dport $port counter name "port_${port_safe}_in" accept
+        # 使用nftables原生端口段语法，并添加标记用于TC分类
+        nft add rule $family $table_name input tcp dport $port meta mark set $mark_id counter name "port_${port_safe}_in" accept
+        nft add rule $family $table_name input udp dport $port meta mark set $mark_id counter name "port_${port_safe}_in" accept
+        nft add rule $family $table_name forward tcp dport $port meta mark set $mark_id counter name "port_${port_safe}_in" accept
+        nft add rule $family $table_name forward udp dport $port meta mark set $mark_id counter name "port_${port_safe}_in" accept
 
-        nft add rule $family $table_name output tcp sport $port counter name "port_${port_safe}_out" accept
-        nft add rule $family $table_name output udp sport $port counter name "port_${port_safe}_out" accept
-        nft add rule $family $table_name forward tcp sport $port counter name "port_${port_safe}_out" accept
-        nft add rule $family $table_name forward udp sport $port counter name "port_${port_safe}_out" accept
+        nft add rule $family $table_name output tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out" accept
+        nft add rule $family $table_name output udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out" accept
+        nft add rule $family $table_name forward tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out" accept
+        nft add rule $family $table_name forward udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out" accept
     else
         # 单个端口处理
         # 添加命名计数器 - 简化为入站和出站两个计数器
@@ -1374,7 +1440,7 @@ remove_nftables_rules() {
     echo "删除端口 $port 的所有规则..."
 
     # 检查是否为端口段
-    if [[ "$port" =~ ^[0-9]+-[0-9]+$ ]]; then
+    if is_port_range "$port"; then
         # 端口段处理
         local port_safe=$(echo "$port" | tr '-' '_')
         local search_pattern="port_${port_safe}_"
@@ -1420,7 +1486,7 @@ remove_nftables_rules() {
     done
 
     # 删除计数器对象
-    if [[ "$port" =~ ^[0-9]+-[0-9]+$ ]]; then
+    if is_port_range "$port"; then
         local port_safe=$(echo "$port" | tr '-' '_')
         nft delete counter $family $table_name "port_${port_safe}_in" 2>/dev/null || true
         nft delete counter $family $table_name "port_${port_safe}_out" 2>/dev/null || true
@@ -1681,7 +1747,7 @@ apply_nftables_quota() {
     fi
 
     # 检查是否为端口段
-    if [[ "$port" =~ ^[0-9]+-[0-9]+$ ]]; then
+    if is_port_range "$port"; then
         # 端口段处理
         local port_safe=$(echo "$port" | tr '-' '_')
         local quota_name="port_${port_safe}_quota"
@@ -1742,7 +1808,7 @@ remove_nftables_quota() {
     echo "删除端口 $port 的配额规则..."
 
     # 检查是否为端口段
-    if [[ "$port" =~ ^[0-9]+-[0-9]+$ ]]; then
+    if is_port_range "$port"; then
         # 端口段处理
         local port_safe=$(echo "$port" | tr '-' '_')
         local quota_name="port_${port_safe}_quota"
@@ -1802,61 +1868,43 @@ apply_tc_limit() {
     tc qdisc add dev $interface root handle 1: htb default 30 2>/dev/null || true
     tc class add dev $interface parent 1: classid 1:1 htb rate 1000mbit 2>/dev/null || true
 
-    # 为端口创建专用类别
-    local class_id="1:$(printf '%x' $((0x1000 + port)))"
+    # 生成统一的class_id
+    local class_id=$(generate_tc_class_id "$port")
 
     # 删除可能存在的旧类别
     tc class del dev $interface classid $class_id 2>/dev/null || true
 
-    # 创建新的限制类别（允许偶尔突发）
-    local base_rate
-    if [[ "$total_limit" =~ gbit$ ]]; then
-        base_rate=$(echo "$total_limit" | sed 's/gbit$//')
-        base_rate=$((base_rate * 1000))  # 转换为Mbps
-    else
-        base_rate=$(echo "$total_limit" | sed 's/mbit$//')
-    fi
-
-    # 计算burst大小：burst = max((rate_bytes_per_sec / 100), 2*MTU)
-    local rate_bytes_per_sec=$((base_rate * 1000000 / 8))  # Mbps转为bytes/sec
-    local burst_by_formula=$((rate_bytes_per_sec / 20))   # 1/20秒的数据量 ≈ 50ms
-    local min_burst=$((2 * 1500))                          # 2个MTU = 3000字节
-
-    # 取两者最大值
-    local burst_bytes
-    if [ $burst_by_formula -gt $min_burst ]; then
-        burst_bytes=$burst_by_formula
-    else
-        burst_bytes=$min_burst
-    fi
-
-    # 转换为tc可识别的格式
-    local burst_size
-    if [ $burst_bytes -lt 1024 ]; then
-        burst_size="${burst_bytes}"
-    elif [ $burst_bytes -lt 1048576 ]; then
-        burst_size="$((burst_bytes / 1024))k"
-    else
-        burst_size="$((burst_bytes / 1048576))m"
-    fi
+    # 创建新的限制类别
+    local base_rate=$(parse_tc_rate_to_mbps "$total_limit")
+    local burst_bytes=$(calculate_tc_burst "$base_rate")
+    local burst_size=$(format_tc_burst "$burst_bytes")
 
     tc class add dev $interface parent 1:1 classid $class_id htb rate $total_limit ceil $total_limit burst $burst_size
 
-    # 计算过滤器优先级（避免冲突）
-    local filter_prio=$((port % 1000 + 1))
+    # 检查是否为端口段
+    if is_port_range "$port"; then
+        # 端口段处理：使用fw分类器根据标记进行分类
+        local mark_id=$(generate_port_range_mark "$port")
+        tc filter add dev $interface protocol ip parent 1:0 prio 1 handle $mark_id fw flowid $class_id 2>/dev/null || true
 
-    # 应用过滤器（双向流量都使用同一个限制）
-    # TCP协议过滤器
-    tc filter add dev $interface protocol ip parent 1:0 prio $filter_prio u32 \
-        match ip protocol 6 0xff match ip sport $port 0xffff flowid $class_id 2>/dev/null || true
-    tc filter add dev $interface protocol ip parent 1:0 prio $filter_prio u32 \
-        match ip protocol 6 0xff match ip dport $port 0xffff flowid $class_id 2>/dev/null || true
+    else
+        # 单个端口处理：继续使用原有的u32精确匹配
+        # 计算过滤器优先级（避免冲突）
+        local filter_prio=$((port % 1000 + 1))
 
-    # UDP协议过滤器
-    tc filter add dev $interface protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
-        match ip protocol 17 0xff match ip sport $port 0xffff flowid $class_id 2>/dev/null || true
-    tc filter add dev $interface protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
-        match ip protocol 17 0xff match ip dport $port 0xffff flowid $class_id 2>/dev/null || true
+        # 应用过滤器（双向流量都使用同一个限制）
+        # TCP协议过滤器
+        tc filter add dev $interface protocol ip parent 1:0 prio $filter_prio u32 \
+            match ip protocol 6 0xff match ip sport $port 0xffff flowid $class_id 2>/dev/null || true
+        tc filter add dev $interface protocol ip parent 1:0 prio $filter_prio u32 \
+            match ip protocol 6 0xff match ip dport $port 0xffff flowid $class_id 2>/dev/null || true
+
+        # UDP协议过滤器
+        tc filter add dev $interface protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
+            match ip protocol 17 0xff match ip sport $port 0xffff flowid $class_id 2>/dev/null || true
+        tc filter add dev $interface protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
+            match ip protocol 17 0xff match ip dport $port 0xffff flowid $class_id 2>/dev/null || true
+    fi
 }
 
 # 删除TC带宽限制
@@ -1864,34 +1912,35 @@ remove_tc_limit() {
     local port=$1
     local interface=$(get_default_interface)
 
-    # 检查是否为端口段
-    if [[ "$port" =~ ^[0-9]+-[0-9]+$ ]]; then
-        # 端口段不支持TC限制，直接返回
-        return 0
-    fi
-
-    # 单个端口处理
-    local class_id="1:$(printf '%x' $((0x1000 + port)))"
+    # 生成统一的class_id
+    local class_id=$(generate_tc_class_id "$port")
 
     # 先检查是否存在TC规则
     if ! tc class show dev $interface 2>/dev/null | grep -q "$class_id"; then
         return 0  # 没有TC规则，直接返回
     fi
 
-    # 计算过滤器优先级
-    local filter_prio=$((port % 1000 + 1))
+    # 检查是否为端口段
+    if is_port_range "$port"; then
+        # 端口段处理：删除基于标记的TC限制
+        local mark_id=$(generate_port_range_mark "$port")
+        tc filter del dev $interface protocol ip parent 1:0 prio 1 handle $mark_id fw 2>/dev/null || true
+    else
+        # 单个端口处理：删除u32精确匹配过滤器
+        local filter_prio=$((port % 1000 + 1))
 
-    # 删除TCP过滤器
-    tc filter del dev $interface protocol ip parent 1:0 prio $filter_prio u32 \
-        match ip protocol 6 0xff match ip sport $port 0xffff 2>/dev/null || true
-    tc filter del dev $interface protocol ip parent 1:0 prio $filter_prio u32 \
-        match ip protocol 6 0xff match ip dport $port 0xffff 2>/dev/null || true
+        # 删除TCP过滤器
+        tc filter del dev $interface protocol ip parent 1:0 prio $filter_prio u32 \
+            match ip protocol 6 0xff match ip sport $port 0xffff 2>/dev/null || true
+        tc filter del dev $interface protocol ip parent 1:0 prio $filter_prio u32 \
+            match ip protocol 6 0xff match ip dport $port 0xffff 2>/dev/null || true
 
-    # 删除UDP过滤器
-    tc filter del dev $interface protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
-        match ip protocol 17 0xff match ip sport $port 0xffff 2>/dev/null || true
-    tc filter del dev $interface protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
-        match ip protocol 17 0xff match ip dport $port 0xffff 2>/dev/null || true
+        # 删除UDP过滤器
+        tc filter del dev $interface protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
+            match ip protocol 17 0xff match ip sport $port 0xffff 2>/dev/null || true
+        tc filter del dev $interface protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
+            match ip protocol 17 0xff match ip dport $port 0xffff 2>/dev/null || true
+    fi
 
     # 删除类别
     tc class del dev $interface classid $class_id 2>/dev/null || true
@@ -2319,7 +2368,7 @@ reset_port_nftables_counters() {
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
 
     # 检查是否为端口段
-    if [[ "$port" =~ ^[0-9]+-[0-9]+$ ]]; then
+    if is_port_range "$port"; then
         # 端口段处理
         local port_safe=$(echo "$port" | tr '-' '_')
         # 重置计数器
