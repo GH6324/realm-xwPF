@@ -6849,12 +6849,12 @@ failover_management_menu() {
     bash "$failover_script" toggle
 }
 
-# 下载端口流量犬脚本
+# 下载端口流量狗脚本
 download_port_traffic_dog_script() {
     local script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/port-traffic-dog.sh"
     local target_path="/usr/local/bin/port-traffic-dog.sh"
 
-    echo -e "${GREEN}正在下载最新版端口流量犬脚本...${NC}"
+    echo -e "${GREEN}正在下载最新版端口流量狗脚本...${NC}"
 
     # 创建目录
     mkdir -p "$(dirname "$target_path")"
@@ -6869,19 +6869,19 @@ download_port_traffic_dog_script() {
     fi
 }
 
-# 端口流量犬菜单
+# 端口流量狗菜单
 port_traffic_dog_menu() {
     local dog_script="/usr/local/bin/port-traffic-dog.sh"
 
     # 每次都下载最新版本
     if ! download_port_traffic_dog_script; then
-        echo -e "${RED}无法下载端口流量犬脚本，功能暂时不可用${NC}"
+        echo -e "${RED}无法下载端口流量狗脚本，功能暂时不可用${NC}"
         read -p "按回车键返回主菜单..."
         return 1
     fi
 
-    # 调用端口流量犬脚本
-    echo -e "${BLUE}启动端口流量犬...${NC}"
+    # 调用端口流量狗脚本
+    echo -e "${BLUE}启动端口流量狗...${NC}"
     echo ""
     bash "$dog_script"
 
@@ -6909,7 +6909,7 @@ show_menu() {
         echo -e "${GREEN}3.${NC} 重启服务"
         echo -e "${GREEN}4.${NC} 停止服务"
         echo -e "${GREEN}5.${NC} 查看日志"
-        echo -e "${BLUE}6.${NC} 端口流量犬（统计端口流量）"
+        echo -e "${BLUE}6.${NC} 端口流量狗（统计端口流量）"
         echo -e "${BLUE}7.${NC} 中转网络链路测试"
         echo -e "${RED}8.${NC} 卸载服务"
         echo -e "${YELLOW}0.${NC} 退出"
