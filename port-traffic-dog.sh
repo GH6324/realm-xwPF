@@ -3,7 +3,7 @@
 set -euo pipefail
 
 # 全局变量
-readonly SCRIPT_VERSION="1.1.3"
+readonly SCRIPT_VERSION="1.1.4"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -69,6 +69,11 @@ install_missing_tools() {
                     "jq") apt install -y jq ;;
                     "awk") apt install -y gawk ;;
                     "bc") apt install -y bc ;;
+                    "cron")
+                        apt install -y cron
+                        systemctl enable cron 2>/dev/null || true
+                        systemctl start cron 2>/dev/null || true
+                        ;;
                     *) apt install -y "$tool" ;;
                 esac
             done
@@ -83,6 +88,11 @@ install_missing_tools() {
                     "jq") apt-get install -y jq ;;
                     "awk") apt-get install -y gawk ;;
                     "bc") apt-get install -y bc ;;
+                    "cron")
+                        apt-get install -y cron
+                        systemctl enable cron 2>/dev/null || true
+                        systemctl start cron 2>/dev/null || true
+                        ;;
                     *) apt-get install -y "$tool" ;;
                 esac
             done
@@ -102,7 +112,7 @@ install_missing_tools() {
 check_dependencies() {
     local silent_mode=${1:-false}
     local missing_tools=()
-    local required_tools=("nft" "tc" "ss" "jq" "awk" "bc" "unzip")
+    local required_tools=("nft" "tc" "ss" "jq" "awk" "bc" "unzip" "cron")
 
     for tool in "${required_tools[@]}"; do
         if ! command -v "$tool" >/dev/null 2>&1; then
