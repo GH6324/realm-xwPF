@@ -3,7 +3,7 @@
 set -euo pipefail
 
 # 全局变量
-readonly SCRIPT_VERSION="1.1.1"
+readonly SCRIPT_VERSION="1.1.2"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -829,8 +829,7 @@ get_port_status_label() {
 
     # 3. 带宽限制标签
     if [ "$limit_enabled" = "true" ] && [ "$rate_limit" != "unlimited" ]; then
-        local limit_text=$(echo "$rate_limit" | sed 's/bps$//' | sed 's/bit$//')
-        status_tags+=("[限制带宽${limit_text}]")
+        status_tags+=("[限制带宽${rate_limit}]")
     fi
 
     # 输出所有标签
@@ -851,18 +850,39 @@ get_port_monthly_usage() {
     calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode"
 }
 
+# 验证带宽格式：0 | 数字Mbps | 数字Gbps (大小写均可)
+validate_bandwidth() {
+    local input="$1"
+    case "$input" in
+        "0") return 0 ;;
+        [0-9][0-9]*[Mm][Bb][Pp][Ss]|[0-9][0-9]*[Gg][Bb][Pp][Ss]) return 0 ;;
+    esac
+    return 1
+}
+
+# 验证配额格式：0 | 数字MB/GB/TB | 数字M/G/T (大小写均可)
+validate_quota() {
+    local input="$1"
+    case "$input" in
+        "0") return 0 ;;
+        [0-9][0-9]*[Mm][Bb]|[0-9][0-9]*[Gg][Bb]|[0-9][0-9]*[Tt][Bb]|[0-9][0-9]*[MmGgTt]) return 0 ;;
+    esac
+    return 1
+}
+
 # 解析大小字符串为字节数
 parse_size_to_bytes() {
     local size_str=$1
-    local number=$(echo "$size_str" | grep -o '^[0-9]*')
-    local unit=$(echo "$size_str" | grep -o '[A-Za-z]*$' | tr '[:lower:]' '[:upper:]')
+    local number=$(echo "$size_str" | grep -o '^[0-9]\+')
+    local unit=$(echo "$size_str" | grep -o '[A-Za-z]\+$' | tr '[:lower:]' '[:upper:]')
+
+    [ -z "$number" ] && echo "0" && return 1
 
     case $unit in
-        "KB") echo $((number * 1024)) ;;
-        "MB") echo $((number * 1048576)) ;;
-        "GB") echo $((number * 1073741824)) ;;
-        "TB") echo $((number * 1099511627776)) ;;
-        *) echo "$number" ;;
+        "MB"|"M") echo $((number * 1048576)) ;;
+        "GB"|"G") echo $((number * 1073741824)) ;;
+        "TB"|"T") echo $((number * 1099511627776)) ;;
+        *) echo "0" ;;
     esac
 }
 
@@ -1142,26 +1162,44 @@ add_port_monitoring() {
     # 设置流量配额
     echo
     local port_list=$(IFS=','; echo "${valid_ports[*]}")
-    echo "为端口 $port_list 设置流量配额（总量控制）:"
-    echo "请输入配额值（0为无限制）（要带单位MB/GB/T）:"
-    echo "(多端口分别配额使用逗号,分隔)(只输入一个值，应用到所有端口):"
-    read -p "流量配额(回车默认0): " quota_input
+    while true; do
+        echo "为端口 $port_list 设置流量配额（总量控制）:"
+        echo "请输入配额值（0为无限制）（要带单位MB/GB/T）:"
+        echo "(多端口分别配额使用逗号,分隔)(只输入一个值，应用到所有端口):"
+        read -p "流量配额(回车默认0): " quota_input
 
-    # 处理配额输入（空输入默认为0）
-    if [ -z "$quota_input" ]; then
-        quota_input="0"
-    fi
-    local QUOTAS=()
-    parse_comma_separated_input "$quota_input" QUOTAS
+        # 处理配额输入（空输入默认为0）
+        if [ -z "$quota_input" ]; then
+            quota_input="0"
+        fi
 
-    # 只输入一个值，应用到所有端口
-    expand_single_value_to_array QUOTAS ${#valid_ports[@]}
-    if [ ${#QUOTAS[@]} -ne ${#valid_ports[@]} ]; then
-        echo -e "${RED}配额值数量与端口数量不匹配${NC}"
-        sleep 2
-        add_port_monitoring
-        return
-    fi
+        local QUOTAS=()
+        parse_comma_separated_input "$quota_input" QUOTAS
+
+        # 验证每个配额值格式
+        local all_valid=true
+        for quota in "${QUOTAS[@]}"; do
+            if [ "$quota" != "0" ] && ! validate_quota "$quota"; then
+                echo -e "${RED}配额格式错误: $quota，请使用如：100MB, 1GB, 2T${NC}"
+                all_valid=false
+                break
+            fi
+        done
+
+        if [ "$all_valid" = false ]; then
+            echo "请重新输入配额值"
+            continue
+        fi
+
+        # 只输入一个值，应用到所有端口
+        expand_single_value_to_array QUOTAS ${#valid_ports[@]}
+        if [ ${#QUOTAS[@]} -ne ${#valid_ports[@]} ]; then
+            echo -e "${RED}配额值数量与端口数量不匹配${NC}"
+            continue
+        fi
+
+        break
+    done
 
     # 设置备注
     echo
@@ -1201,15 +1239,7 @@ add_port_monitoring() {
         local reset_day=1
 
         if [ "$quota" != "0" ] && [ -n "$quota" ]; then
-            # 转换为大写进行验证
-            local quota_upper=$(echo "$quota" | tr '[:lower:]' '[:upper:]')
-
-            # 验证输入格式
-            if [[ "$quota_upper" =~ ^[0-9]+[MGT]B?$ ]]; then
-                monthly_limit="$quota"
-            else
-                echo -e "${YELLOW}端口 $port 配额格式错误，设置为无限制${NC}"
-            fi
+            monthly_limit="$quota"
         fi
 
         local port_config="{
@@ -1237,7 +1267,7 @@ add_port_monitoring() {
 
         # 设置了具体配额值，应用配额规则
         if [ "$monthly_limit" != "unlimited" ]; then
-            apply_nftables_quota "$port" "$quota_upper"
+            apply_nftables_quota "$port" "$quota"
         fi
 
         echo -e "${GREEN}端口 $port 监控添加成功${NC}"
@@ -1404,30 +1434,30 @@ add_nftables_rules() {
         nft add counter $family $table_name "port_${port_safe}_out" 2>/dev/null || true
 
         # 使用nftables原生端口段语法，并添加标记用于TC分类
-        nft add rule $family $table_name input tcp dport $port meta mark set $mark_id counter name "port_${port_safe}_in" accept
-        nft add rule $family $table_name input udp dport $port meta mark set $mark_id counter name "port_${port_safe}_in" accept
-        nft add rule $family $table_name forward tcp dport $port meta mark set $mark_id counter name "port_${port_safe}_in" accept
-        nft add rule $family $table_name forward udp dport $port meta mark set $mark_id counter name "port_${port_safe}_in" accept
+        nft add rule $family $table_name input tcp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
+        nft add rule $family $table_name input udp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
+        nft add rule $family $table_name forward tcp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
+        nft add rule $family $table_name forward udp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
 
-        nft add rule $family $table_name output tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out" accept
-        nft add rule $family $table_name output udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out" accept
-        nft add rule $family $table_name forward tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out" accept
-        nft add rule $family $table_name forward udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out" accept
+        nft add rule $family $table_name output tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
+        nft add rule $family $table_name output udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
+        nft add rule $family $table_name forward tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
+        nft add rule $family $table_name forward udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
     else
         # 单个端口处理
         # 添加命名计数器 - 简化为入站和出站两个计数器
         nft add counter $family $table_name "port_${port}_in" 2>/dev/null || true
         nft add counter $family $table_name "port_${port}_out" 2>/dev/null || true
 
-        nft add rule $family $table_name input tcp dport $port counter name "port_${port}_in" accept
-        nft add rule $family $table_name input udp dport $port counter name "port_${port}_in" accept
-        nft add rule $family $table_name forward tcp dport $port counter name "port_${port}_in" accept
-        nft add rule $family $table_name forward udp dport $port counter name "port_${port}_in" accept
+        nft add rule $family $table_name input tcp dport $port counter name "port_${port}_in"
+        nft add rule $family $table_name input udp dport $port counter name "port_${port}_in"
+        nft add rule $family $table_name forward tcp dport $port counter name "port_${port}_in"
+        nft add rule $family $table_name forward udp dport $port counter name "port_${port}_in"
 
-        nft add rule $family $table_name output tcp sport $port counter name "port_${port}_out" accept
-        nft add rule $family $table_name output udp sport $port counter name "port_${port}_out" accept
-        nft add rule $family $table_name forward tcp sport $port counter name "port_${port}_out" accept
-        nft add rule $family $table_name forward udp sport $port counter name "port_${port}_out" accept
+        nft add rule $family $table_name output tcp sport $port counter name "port_${port}_out"
+        nft add rule $family $table_name output udp sport $port counter name "port_${port}_out"
+        nft add rule $family $table_name forward tcp sport $port counter name "port_${port}_out"
+        nft add rule $family $table_name forward udp sport $port counter name "port_${port}_out"
     fi
 }
 
@@ -1571,20 +1601,18 @@ set_port_bandwidth_limit() {
         # 先移除旧的限制
         remove_tc_limit "$port"
 
-        # 转换为小写进行验证和处理
-        local limit_lower=$(echo "$limit" | tr '[:upper:]' '[:lower:]')
-
         # 验证输入格式
-        if ! [[ "$limit_lower" =~ ^[0-9]+[mg]bps$ ]]; then
+        if ! validate_bandwidth "$limit"; then
             echo -e "${RED}端口 $port 格式错误，请使用如：100Mbps, 1Gbps${NC}"
             continue
         fi
 
         # 转换为TC格式
         local tc_limit
-        if [[ "$limit_lower" =~ ^[0-9]+mbps$ ]]; then
+        local limit_lower=$(echo "$limit" | tr '[:upper:]' '[:lower:]')
+        if [[ "$limit_lower" =~ mbps$ ]]; then
             tc_limit=$(echo "$limit_lower" | sed 's/mbps$/mbit/')
-        elif [[ "$limit_lower" =~ ^[0-9]+gbps$ ]]; then
+        elif [[ "$limit_lower" =~ gbps$ ]]; then
             tc_limit=$(echo "$limit_lower" | sed 's/gbps$/gbit/')
         fi
 
@@ -1640,26 +1668,44 @@ set_port_quota_limit() {
     # 显示要设置配额的端口
     echo
     local port_list=$(IFS=','; echo "${ports_to_quota[*]}")
-    echo "为端口 $port_list 设置流量配额（总量控制）:"
-    echo "请输入配额值（0为无限制）（要带单位MB/GB/T）:"
-    echo "(多端口分别配额使用逗号,分隔)(只输入一个值，应用到所有端口):"
-    read -p "流量配额(回车默认0): " quota_input
+    while true; do
+        echo "为端口 $port_list 设置流量配额（总量控制）:"
+        echo "请输入配额值（0为无限制）（要带单位MB/GB/T）:"
+        echo "(多端口分别配额使用逗号,分隔)(只输入一个值，应用到所有端口):"
+        read -p "流量配额(回车默认0): " quota_input
 
-    # 处理配额值输入（空输入默认为0）
-    if [ -z "$quota_input" ]; then
-        quota_input="0"
-    fi
-    local QUOTAS=()
-    parse_comma_separated_input "$quota_input" QUOTAS
+        # 处理配额值输入（空输入默认为0）
+        if [ -z "$quota_input" ]; then
+            quota_input="0"
+        fi
 
-    # 如果只输入一个值，应用到所有端口
-    expand_single_value_to_array QUOTAS ${#ports_to_quota[@]}
-    if [ ${#QUOTAS[@]} -ne ${#ports_to_quota[@]} ]; then
-        echo -e "${RED}配额值数量与端口数量不匹配${NC}"
-        sleep 2
-        set_port_quota_limit
-        return
-    fi
+        local QUOTAS=()
+        parse_comma_separated_input "$quota_input" QUOTAS
+
+        # 验证每个配额值格式
+        local all_valid=true
+        for quota in "${QUOTAS[@]}"; do
+            if [ "$quota" != "0" ] && ! validate_quota "$quota"; then
+                echo -e "${RED}配额格式错误: $quota，请使用如：100MB, 1GB, 2T${NC}"
+                all_valid=false
+                break
+            fi
+        done
+
+        if [ "$all_valid" = false ]; then
+            echo "请重新输入配额值"
+            continue
+        fi
+
+        # 如果只输入一个值，应用到所有端口
+        expand_single_value_to_array QUOTAS ${#ports_to_quota[@]}
+        if [ ${#QUOTAS[@]} -ne ${#ports_to_quota[@]} ]; then
+            echo -e "${RED}配额值数量与端口数量不匹配${NC}"
+            continue
+        fi
+
+        break
+    done
 
     # 批量设置配额
     local success_count=0
@@ -1677,20 +1723,13 @@ set_port_quota_limit() {
             continue
         fi
 
-        # 转换为大写进行验证和处理
-        local quota_upper=$(echo "$quota" | tr '[:lower:]' '[:upper:]')
 
-        # 验证输入格式
-        if ! [[ "$quota_upper" =~ ^[0-9]+[MGT]B?$ ]]; then
-            echo -e "${RED}端口 $port 格式错误，请使用如：100MB, 1GB, 2T${NC}"
-            continue
-        fi
 
         # 先删除旧的配额规则（如果存在）
         remove_nftables_quota "$port"
 
-        # 应用新的nftables配额（使用标准化的大写格式）
-        apply_nftables_quota "$port" "$quota_upper"
+        # 应用新的nftables配额
+        apply_nftables_quota "$port" "$quota"
 
         # 更新配置文件（保存用户原始输入格式）
         update_config ".ports.\"$port\".quota.enabled = true |
@@ -1732,19 +1771,13 @@ apply_nftables_quota() {
     local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"single\"" "$CONFIG_FILE")
 
     # 转换配额为字节数
-    local quota_bytes
-    if [[ "$quota_limit" =~ ^[0-9]+MB?$ ]]; then
-        local num=$(echo "$quota_limit" | sed 's/MB\?$//')
-        quota_bytes=$((num * 1048576))
-    elif [[ "$quota_limit" =~ ^[0-9]+GB?$ ]]; then
-        local num=$(echo "$quota_limit" | sed 's/GB\?$//')
-        quota_bytes=$((num * 1073741824))
-    elif [[ "$quota_limit" =~ ^[0-9]+TB?$ ]]; then
-        local num=$(echo "$quota_limit" | sed 's/TB\?$//')
-        quota_bytes=$((num * 1099511627776))
-    else
-        quota_bytes="$quota_limit"
-    fi
+    local quota_bytes=$(parse_size_to_bytes "$quota_limit")
+
+    # 获取当前流量统计作为quota初始值
+    local current_traffic=($(get_port_traffic "$port"))
+    local current_input=${current_traffic[0]}
+    local current_output=${current_traffic[1]}
+    local current_total=$(calculate_total_traffic "$current_input" "$current_output" "$billing_mode")
 
     # 检查是否为端口段
     if is_port_range "$port"; then
@@ -1752,8 +1785,8 @@ apply_nftables_quota() {
         local port_safe=$(echo "$port" | tr '-' '_')
         local quota_name="port_${port_safe}_quota"
 
-        # 创建配额对象
-        nft add quota $family $table_name $quota_name { over $quota_bytes bytes } 2>/dev/null || true
+        # 创建配额对象，使用当前流量作为初始值
+        nft add quota $family $table_name $quota_name { over $quota_bytes bytes used $current_total bytes } 2>/dev/null || true
 
         # 根据统计模式设置配额规则
         if [ "$billing_mode" = "double" ]; then
@@ -1776,8 +1809,8 @@ apply_nftables_quota() {
         # 单个端口处理
         local quota_name="port_${port}_quota"
 
-        # 创建配额对象
-        nft add quota $family $table_name $quota_name { over $quota_bytes bytes } 2>/dev/null || true
+        # 创建配额对象，使用当前流量作为初始值
+        nft add quota $family $table_name $quota_name { over $quota_bytes bytes used $current_total bytes } 2>/dev/null || true
 
         # 根据统计模式设置配额规则
         if [ "$billing_mode" = "double" ]; then
@@ -2635,8 +2668,7 @@ import_config() {
         local quota_enabled=$(jq -r ".ports.\"$port\".quota.enabled // false" "$CONFIG_FILE")
         local monthly_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE")
         if [ "$quota_enabled" = "true" ] && [ "$monthly_limit" != "unlimited" ]; then
-            local quota_upper=$(echo "$monthly_limit" | tr '[:lower:]' '[:upper:]')
-            apply_nftables_quota "$port" "$quota_upper"
+            apply_nftables_quota "$port" "$monthly_limit"
         fi
 
         # 应用带宽限制（如果有）
@@ -2645,9 +2677,9 @@ import_config() {
         if [ "$limit_enabled" = "true" ] && [ "$rate_limit" != "unlimited" ]; then
             local limit_lower=$(echo "$rate_limit" | tr '[:upper:]' '[:lower:]')
             local tc_limit
-            if [[ "$limit_lower" =~ ^[0-9]+mbps$ ]]; then
+            if [[ "$limit_lower" =~ mbps$ ]]; then
                 tc_limit=$(echo "$limit_lower" | sed 's/mbps$/mbit/')
-            elif [[ "$limit_lower" =~ ^[0-9]+gbps$ ]]; then
+            elif [[ "$limit_lower" =~ gbps$ ]]; then
                 tc_limit=$(echo "$limit_lower" | sed 's/gbps$/gbit/')
             fi
             if [ -n "$tc_limit" ]; then
