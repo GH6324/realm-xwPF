@@ -1,5 +1,6 @@
-# realm 全功能一键网络转发管理,快速搭建中转服务器，三大脚本即可构建完整中转生态
-[中文](README.md) | [English](README_EN.md)
+# realm 全功能一键网络转发管理,三大脚本快速搭建中转服务器
+
+[中文](README.md) | [English](README_EN.md) | [端口流量狗介绍](port-traffic-dog-README.md)
 
 ---
 
@@ -137,6 +138,7 @@ wget -qO- https://ghfast.top/https://raw.githubusercontent.com/zywe03/realm-xwPF
 
 - **📋 一键导出** - 打包全部文件为压缩包自由迁移(包括备注等等信息完全迁移)
 - **📒 一键导入** - 识别导出的压缩包完成自由迁移
+- **🖨️ 一键识别并导入** 自写realm的规则配置文件,脚本可识别并导入
 - **🔧 智能检测** - 自动检测系统架构、端口冲突,连接可用性
 
 - **📝 智能日志管理** - 自动限制日志大小，防止磁盘占用过大
@@ -151,7 +153,7 @@ wget -qO- https://ghfast.top/https://raw.githubusercontent.com/zywe03/realm-xwPF
 - 指定中转机的某个入口 IP,以及指定某个出口 IP (适用于多IP情况和一入口多出口和多入口一出口的情况)
 - 更多玩法参考[zhboner/realm](https://github.com/zhboner/realm)
 
-## 🗺️ 示意图理解不同场景下工作原理(推荐阅读)
+## 🗺️ 示意图理解不同场景下工作原理(推荐阅读理解)
 
 <details>
 <summary><strong>单端realm架构只负责转发（常见）</strong></summary>

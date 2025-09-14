@@ -3,13 +3,14 @@
 set -euo pipefail
 
 # 全局变量
-readonly SCRIPT_VERSION="1.1.2"
+readonly SCRIPT_VERSION="1.1.3"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
 readonly CONFIG_FILE="$CONFIG_DIR/config.json"
 readonly DATA_DIR="$CONFIG_DIR/data"
-readonly SNAPSHOT_DIR="$DATA_DIR/snapshots"
+readonly DAILY_BASELINES_DB="$DATA_DIR/daily_baselines.db"
+readonly DAILY_INCREMENTS_DB="$DATA_DIR/daily_increments.db"
 readonly LOG_FILE="$CONFIG_DIR/logs/traffic.log"
 
 # 颜色定义
@@ -179,7 +180,7 @@ check_root() {
 # 初始化配置
 init_config() {
     # 创建配置目录
-    mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$SNAPSHOT_DIR" "$(dirname "$LOG_FILE")"
+    mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$(dirname "$LOG_FILE")"
 
     # 下载通知模块（静默下载，不影响主流程）
     download_notification_modules >/dev/null 2>&1 || true
@@ -234,8 +235,8 @@ EOF
     # 初始化nftables表
     init_nftables
 
-    # 设置快照定时任务
-    setup_snapshot_cron
+    # 设置每日数据记录定时任务
+    setup_daily_record_cron
 }
 
 # 初始化nftables表
@@ -251,223 +252,139 @@ init_nftables() {
 }
 
 
-# 创建流量快照
-create_traffic_snapshot() {
-    local period=$1
+# 记录每日数据
+record_daily_data() {
+    local today=$(get_beijing_time +%Y-%m-%d)
+    local yesterday=$(get_beijing_time -d "yesterday" +%Y-%m-%d)
     local active_ports=($(get_active_ports))
 
-    if [ ${#active_ports[@]} -eq 0 ]; then
-        return
-    fi
-
-    # 生成时间标识
-    local time_key
-    case $period in
-        "daily")
-            time_key=$(get_beijing_time +%Y-%m-%d)
-            ;;
-        "weekly")
-            # 获取本周一日期，确保时间键一致
-            local monday_date=$(get_beijing_time -d 'monday' +%Y-%m-%d)
-            time_key=$(get_beijing_time -d "$monday_date" +%Y-W%V)
-            ;;
-        "monthly")
-            time_key=$(get_beijing_time +%Y-%m)
-            ;;
-        *)
-            echo "错误：无效的时间段 $period"
-            return 1
-            ;;
-    esac
-
-    # 创建端口快照
     for port in "${active_ports[@]}"; do
-        # 获取流量数据
-        local traffic_data=($(get_port_traffic "$port"))
-        local input_bytes=${traffic_data[0]}
-        local output_bytes=${traffic_data[1]}
-
-        # 创建分离的快照文件
-        if is_port_range "$port"; then
-            # 端口段处理：将-替换为_用于文件名
-            local port_safe=$(echo "$port" | tr '-' '_')
-            local snapshot_file="$SNAPSHOT_DIR/port_${port_safe}_${period}_${time_key}.json"
-        else
-            # 单个端口处理
-            local snapshot_file="$SNAPSHOT_DIR/port_${port}_${period}_${time_key}.json"
+        # 记录今日00:00基准值
+        if ! grep -q "^$today|$port|" "$DAILY_BASELINES_DB" 2>/dev/null; then
+            local current_traffic=($(get_port_traffic "$port"))
+            echo "$today|$port|${current_traffic[0]}|${current_traffic[1]}" >> "$DAILY_BASELINES_DB"
         fi
-        echo "{\"input\": $input_bytes, \"output\": $output_bytes, \"timestamp\": \"$(get_beijing_time -Iseconds)\"}" > "$snapshot_file"
+
+        # 计算并记录昨日增量
+        local yesterday_baseline=$(grep "^$yesterday|$port|" "$DAILY_BASELINES_DB" 2>/dev/null | head -n1)
+        local today_baseline=$(grep "^$today|$port|" "$DAILY_BASELINES_DB" 2>/dev/null | head -n1)
+
+        if [ -n "$yesterday_baseline" ] && [ -n "$today_baseline" ]; then
+            # 计算昨日增量
+            local yesterday_input=$(echo "$yesterday_baseline" | cut -d'|' -f3)
+            local yesterday_output=$(echo "$yesterday_baseline" | cut -d'|' -f4)
+            local today_input=$(echo "$today_baseline" | cut -d'|' -f3)
+            local today_output=$(echo "$today_baseline" | cut -d'|' -f4)
+
+            local daily_input=$((today_input - yesterday_input))
+            local daily_output=$((today_output - yesterday_output))
+
+            # 防止负数
+            [ $daily_input -lt 0 ] && daily_input=0
+            [ $daily_output -lt 0 ] && daily_output=0
+
+            # 记录昨日增量（避免重复记录）
+            if ! grep -q "^$yesterday|$port|" "$DAILY_INCREMENTS_DB" 2>/dev/null; then
+                echo "$yesterday|$port|$daily_input|$daily_output" >> "$DAILY_INCREMENTS_DB"
+            fi
+        fi
     done
 
     # 记录日志
-    echo "$(get_beijing_time '+%Y-%m-%d %H:%M:%S') - 创建 $period 快照: $time_key" >> "$LOG_FILE"
+    echo "$(get_beijing_time '+%Y-%m-%d %H:%M:%S') - 记录每日数据: $today" >> "$LOG_FILE"
 }
 
-# 获取时间段流量
-get_period_traffic() {
+# 获取今日流量
+get_today_traffic() {
     local port=$1
-    local period=$2
+    local today=$(get_beijing_time +%Y-%m-%d)
 
-    # 获取当前流量数据
+    # 获取当前累计流量
     local current_traffic=($(get_port_traffic "$port"))
     local current_input=${current_traffic[0]}
     local current_output=${current_traffic[1]}
 
-    # 生成时间标识
-    local time_key
+    # 查找今日00:00基准值
+    local today_baseline=$(grep "^$today|$port|" "$DAILY_BASELINES_DB" 2>/dev/null | head -n1)
+
+    if [ -n "$today_baseline" ]; then
+        # 有基准值，计算今日增量
+        local baseline_input=$(echo "$today_baseline" | cut -d'|' -f3)
+        local baseline_output=$(echo "$today_baseline" | cut -d'|' -f4)
+
+        local today_input=$((current_input - baseline_input))
+        local today_output=$((current_output - baseline_output))
+
+        # 防止负数（计数器重置）
+        [ $today_input -lt 0 ] && today_input=$current_input
+        [ $today_output -lt 0 ] && today_output=$current_output
+    else
+        # 没有基准值，使用当前累计（新端口情况）
+        local today_input=$current_input
+        local today_output=$current_output
+    fi
+
+    echo "$today_input $today_output"
+}
+
+# 获取本月流量
+get_month_traffic() {
+    local port=$1
+    local current_month=$(get_beijing_time +%Y-%m)
+
+    # 1. 获取本月1号到昨天的所有增量总和
+    local month_input=0
+    local month_output=0
+
+    # 读取本月的所有历史增量（如果文件存在）
+    if [ -f "$DAILY_INCREMENTS_DB" ]; then
+        while IFS='|' read -r date port_id input_inc output_inc; do
+            if [[ "$date" =~ ^$current_month && "$port_id" == "$port" ]]; then
+                month_input=$((month_input + input_inc))
+                month_output=$((month_output + output_inc))
+            fi
+        done < "$DAILY_INCREMENTS_DB"
+    fi
+
+    # 2. 加上今日流量
+    local today_traffic=($(get_today_traffic "$port"))
+    month_input=$((month_input + ${today_traffic[0]}))
+    month_output=$((month_output + ${today_traffic[1]}))
+
+    echo "$month_input $month_output"
+}
+
+# 兼容旧接口：获取时间段流量
+get_period_traffic() {
+    local port=$1
+    local period=$2
+
     case $period in
         "daily")
-            time_key=$(get_beijing_time +%Y-%m-%d)
-            ;;
-        "weekly")
-            # 获取本周一日期
-            local monday_date=$(get_beijing_time -d 'monday' +%Y-%m-%d)
-            time_key=$(get_beijing_time -d "$monday_date" +%Y-W%V)
+            get_today_traffic "$port"
             ;;
         "monthly")
-            time_key=$(get_beijing_time +%Y-%m)
+            get_month_traffic "$port"
             ;;
         *)
             echo "0 0"
-            return
             ;;
     esac
-
-    # 查找对应的快照文件
-    if is_port_range "$port"; then
-        # 端口段处理：将-替换为_用于文件名
-        local port_safe=$(echo "$port" | tr '-' '_')
-        local snapshot_file="$SNAPSHOT_DIR/port_${port_safe}_${period}_${time_key}.json"
-    else
-        # 单个端口处理
-        local snapshot_file="$SNAPSHOT_DIR/port_${port}_${period}_${time_key}.json"
-    fi
-
-    # 如果快照文件不存在，返回0流量（等待定时任务创建正式快照）
-    if [ ! -f "$snapshot_file" ]; then
-        echo "0 0"
-        return
-    fi
-
-    # 从快照文件读取基准值
-    local baseline_input=$(jq -r '.input // null' "$snapshot_file" 2>/dev/null || echo "null")
-    local baseline_output=$(jq -r '.output // null' "$snapshot_file" 2>/dev/null || echo "null")
-
-    # 如果没有找到对应的快照，返回当前累计流量作为时间段流量
-    if [ "$baseline_input" = "null" ] || [ "$baseline_input" = "" ]; then
-        echo "$current_input $current_output"
-        return
-    fi
-    if [ "$baseline_output" = "null" ] || [ "$baseline_output" = "" ]; then
-        echo "$current_input $current_output"
-        return
-    fi
-
-    # 确保基准值是数字
-    if ! [[ "$baseline_input" =~ ^[0-9]+$ ]]; then
-        baseline_input=0
-    fi
-    if ! [[ "$baseline_output" =~ ^[0-9]+$ ]]; then
-        baseline_output=0
-    fi
-
-    # 计算时间段流量（当前值 - 基准值）
-    local period_input=$((current_input - baseline_input))
-    local period_output=$((current_output - baseline_output))
-
-    # 确保不为负数（防止计数器重置等异常情况）
-    if [ $period_input -lt 0 ]; then
-        period_input=0
-    fi
-    if [ $period_output -lt 0 ]; then
-        period_output=0
-    fi
-
-    echo "$period_input $period_output"
 }
 
-# 获取时间段流量（使用缓存的当前流量数据）
+# 兼容旧接口：获取时间段流量（缓存版本）
 get_period_traffic_cached() {
     local port=$1
     local period=$2
     local current_input=$3
     local current_output=$4
 
-    # 生成时间标识
-    local time_key
-    case $period in
-        "daily")
-            time_key=$(get_beijing_time +%Y-%m-%d)
-            ;;
-        "weekly")
-            # 获取本周一日期
-            local monday_date=$(get_beijing_time -d 'monday' +%Y-%m-%d)
-            time_key=$(get_beijing_time -d "$monday_date" +%Y-W%V)
-            ;;
-        "monthly")
-            time_key=$(get_beijing_time +%Y-%m)
-            ;;
-        *)
-            echo "0 0"
-            return
-            ;;
-    esac
-
-    # 查找对应的快照文件
-    if is_port_range "$port"; then
-        # 端口段处理：将-替换为_用于文件名
-        local port_safe=$(echo "$port" | tr '-' '_')
-        local snapshot_file="$SNAPSHOT_DIR/port_${port_safe}_${period}_${time_key}.json"
-    else
-        # 单个端口处理
-        local snapshot_file="$SNAPSHOT_DIR/port_${port}_${period}_${time_key}.json"
-    fi
-
-    # 如果快照文件不存在，返回0流量（等待定时任务创建正式快照）
-    if [ ! -f "$snapshot_file" ]; then
-        echo "0 0"
-        return
-    fi
-
-    # 从快照文件读取基准值
-    local baseline_input=$(jq -r '.input // null' "$snapshot_file" 2>/dev/null || echo "null")
-    local baseline_output=$(jq -r '.output // null' "$snapshot_file" 2>/dev/null || echo "null")
-
-    # 如果没有找到对应的快照，返回当前累计流量作为时间段流量
-    if [ "$baseline_input" = "null" ] || [ "$baseline_input" = "" ]; then
-        echo "$current_input $current_output"
-        return
-    fi
-    if [ "$baseline_output" = "null" ] || [ "$baseline_output" = "" ]; then
-        echo "$current_input $current_output"
-        return
-    fi
-
-    # 确保基准值是数字
-    if ! [[ "$baseline_input" =~ ^[0-9]+$ ]]; then
-        baseline_input=0
-    fi
-    if ! [[ "$baseline_output" =~ ^[0-9]+$ ]]; then
-        baseline_output=0
-    fi
-
-    # 计算时间段流量（当前值 - 基准值）
-    local period_input=$((current_input - baseline_input))
-    local period_output=$((current_output - baseline_output))
-
-    # 防止负数（可能由于计数器重置等原因）
-    if [ $period_input -lt 0 ]; then
-        period_input=$current_input
-    fi
-    if [ $period_output -lt 0 ]; then
-        period_output=$current_output
-    fi
-
-    echo "$period_input $period_output"
+    # 忽略缓存参数，直接调用新接口
+    get_period_traffic "$port" "$period"
 }
 
-# 设置流量快照定时任务
-setup_snapshot_cron() {
+# 设置每日数据记录定时任务
+setup_daily_record_cron() {
     local script_path="$SCRIPT_PATH"
 
     # 检查cron服务
@@ -480,16 +397,14 @@ setup_snapshot_cron() {
     # 创建临时文件
     local temp_cron=$(mktemp)
 
-    # 获取现有任务
-    crontab -l 2>/dev/null | grep -v "# 端口流量狗快照任务" | grep -v "port-traffic-dog.*--create-snapshot" | grep -v "每日1点清理过期快照" > "$temp_cron" || true
+    # 获取现有任务，移除旧的数据记录任务
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗" | grep -v "port-traffic-dog.*--" > "$temp_cron" || true
 
-    # 添加定时任务
+    # 添加新的定时任务
     cat >> "$temp_cron" << EOF
-# 端口流量狗快照任务
-0 0 * * * $script_path --create-snapshot daily >/dev/null 2>&1  # 每日0点创建日快照
-0 0 * * 1 $script_path --create-snapshot weekly >/dev/null 2>&1 # 每周一0点创建周快照
-0 0 1 * * $script_path --create-snapshot monthly >/dev/null 2>&1 # 每月1日0点创建月快照
-0 1 * * * /bin/bash -c "find /etc/port-traffic-dog/data/snapshots -name 'port_*_daily_*.json' -type f -mtime +30 -delete 2>/dev/null; find /etc/port-traffic-dog/data/snapshots -name 'port_*_weekly_*.json' -type f -mtime +84 -delete 2>/dev/null; find /etc/port-traffic-dog/data/snapshots -name 'port_*_monthly_*.json' -type f -mtime +180 -delete 2>/dev/null" # 每日1点清理过期快照
+# 端口流量狗每日数据记录
+5 0 * * * $script_path --record-daily >/dev/null 2>&1  # 每日00:05记录数据
+0 2 1 * * $script_path --cleanup-data >/dev/null 2>&1  # 每月1日02:00清理过期数据
 EOF
 
     # 安装任务
@@ -498,25 +413,44 @@ EOF
 
     echo -e "${GREEN}定时任务设置成功${NC}"
     echo "已设置以下定时任务："
-    echo "  - 每日0点创建日快照"
-    echo "  - 每周一0点创建周快照"
-    echo "  - 每月1日0点创建月快照"
-    echo "  - 每日1点清理过期快照"
+    echo "  - 每日00:05记录数据"
+    echo "  - 每月1日02:00清理过期数据"
 }
 
-# 移除流量快照定时任务
-remove_snapshot_cron() {
+# 移除每日数据记录定时任务
+remove_daily_record_cron() {
     # 创建临时文件
     local temp_cron=$(mktemp)
 
-    # 获取当前用户的cron任务
-    crontab -l 2>/dev/null | grep -v "# 端口流量狗快照任务" | grep -v "port-traffic-dog.*--create-snapshot" | grep -v "每日1点清理过期快照" > "$temp_cron" || true
+    # 获取当前用户的cron任务，移除端口流量狗相关任务
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗" | grep -v "port-traffic-dog.*--" > "$temp_cron" || true
 
     # 安装清理后的cron任务
     crontab "$temp_cron"
     rm -f "$temp_cron"
 
     echo -e "${GREEN}定时任务已移除${NC}"
+}
+
+# 清理过期数据
+cleanup_old_data() {
+    # 保留最近90天的基准数据
+    local cutoff_date=$(get_beijing_time -d "90 days ago" +%Y-%m-%d)
+
+    # 清理基准文件
+    if [ -f "$DAILY_BASELINES_DB" ]; then
+        awk -F'|' -v cutoff="$cutoff_date" '$1 >= cutoff' "$DAILY_BASELINES_DB" > "$DAILY_BASELINES_DB.tmp"
+        mv "$DAILY_BASELINES_DB.tmp" "$DAILY_BASELINES_DB"
+    fi
+
+    # 清理增量文件
+    if [ -f "$DAILY_INCREMENTS_DB" ]; then
+        awk -F'|' -v cutoff="$cutoff_date" '$1 >= cutoff' "$DAILY_INCREMENTS_DB" > "$DAILY_INCREMENTS_DB.tmp"
+        mv "$DAILY_INCREMENTS_DB.tmp" "$DAILY_INCREMENTS_DB"
+    fi
+
+    # 记录日志
+    echo "$(get_beijing_time '+%Y-%m-%d %H:%M:%S') - 清理过期数据，保留 $cutoff_date 之后的数据" >> "$LOG_FILE"
 }
 
 
@@ -1343,18 +1277,14 @@ remove_port_monitoring() {
             # 4. 从配置文件删除
             update_config "del(.ports.\"$port\")"
 
-            # 5. 删除对应的所有快照文件
-            if is_port_range "$port"; then
-                # 端口段处理：将-替换为_用于文件名
-                local port_safe=$(echo "$port" | tr '-' '_')
-                rm -f "$SNAPSHOT_DIR/port_${port_safe}_daily_"*.json 2>/dev/null || true
-                rm -f "$SNAPSHOT_DIR/port_${port_safe}_weekly_"*.json 2>/dev/null || true
-                rm -f "$SNAPSHOT_DIR/port_${port_safe}_monthly_"*.json 2>/dev/null || true
-            else
-                # 单个端口处理
-                rm -f "$SNAPSHOT_DIR/port_${port}_daily_"*.json 2>/dev/null || true
-                rm -f "$SNAPSHOT_DIR/port_${port}_weekly_"*.json 2>/dev/null || true
-                rm -f "$SNAPSHOT_DIR/port_${port}_monthly_"*.json 2>/dev/null || true
+            # 5. 删除对应的数据记录
+            if [ -f "$DAILY_BASELINES_DB" ]; then
+                grep -v "|$port|" "$DAILY_BASELINES_DB" > "$DAILY_BASELINES_DB.tmp" 2>/dev/null || true
+                mv "$DAILY_BASELINES_DB.tmp" "$DAILY_BASELINES_DB" 2>/dev/null || true
+            fi
+            if [ -f "$DAILY_INCREMENTS_DB" ]; then
+                grep -v "|$port|" "$DAILY_INCREMENTS_DB" > "$DAILY_INCREMENTS_DB.tmp" 2>/dev/null || true
+                mv "$DAILY_INCREMENTS_DB.tmp" "$DAILY_INCREMENTS_DB" 2>/dev/null || true
             fi
 
             # 6. 清理重置历史记录中的该端口记录
@@ -1982,7 +1912,7 @@ remove_tc_limit() {
 # 流量统计查看
 view_traffic_statistics() {
     echo -e "${BLUE}流量统计查看${NC}"
-    echo "快照文件路径: $SNAPSHOT_DIR"
+    echo "数据文件路径: $DATA_DIR"
     echo "1. 历史流量统计"
     echo "2. 端口流量排行"
     echo "0. 返回主菜单"
@@ -2035,8 +1965,8 @@ show_port_historical_details() {
     echo "端口 $port $status_label"
     echo
 
-    # 获取本日流量情况(每日0点)
-    local daily_traffic=($(get_period_traffic "$port" "daily"))
+    # 获取本日流量情况(今日00:00起)
+    local daily_traffic=($(get_today_traffic "$port"))
     local daily_input=${daily_traffic[0]:-0}
     local daily_output=${daily_traffic[1]:-0}
     local daily_total=$(calculate_total_traffic "$daily_input" "$daily_output" "$billing_mode")
@@ -2045,26 +1975,13 @@ show_port_historical_details() {
     local daily_output_formatted=$(format_bytes $daily_output)
     local daily_total_formatted=$(format_bytes $daily_total)
 
-    echo "本日流量情况(昨日23:59起)"
+    echo "本日流量情况(今日00:00起)"
     echo "🟢 上行(入站): $daily_input_formatted | 下行(出站): $daily_output_formatted | 总计流量: $daily_total_formatted"
     echo "────────────────────────────────────────────────────────"
 
-    # 获取本周流量情况(周一0点)
-    local weekly_traffic=($(get_period_traffic "$port" "weekly"))
-    local weekly_input=${weekly_traffic[0]:-0}
-    local weekly_output=${weekly_traffic[1]:-0}
-    local weekly_total=$(calculate_total_traffic "$weekly_input" "$weekly_output" "$billing_mode")
 
-    local weekly_input_formatted=$(format_bytes $weekly_input)
-    local weekly_output_formatted=$(format_bytes $weekly_output)
-    local weekly_total_formatted=$(format_bytes $weekly_total)
-
-    echo "本周流量情况:(周一0点)"
-    echo "🟢 上行(入站): $weekly_input_formatted | 下行(出站): $weekly_output_formatted | 总计流量: $weekly_total_formatted"
-    echo "────────────────────────────────────────────────────────"
-
-    # 获取本月流量情况(每月1日0点)
-    local monthly_traffic=($(get_period_traffic "$port" "monthly"))
+    # 获取本月流量情况(本月1日00:00起)
+    local monthly_traffic=($(get_month_traffic "$port"))
     local monthly_input=${monthly_traffic[0]:-0}
     local monthly_output=${monthly_traffic[1]:-0}
     local monthly_total=$(calculate_total_traffic "$monthly_input" "$monthly_output" "$billing_mode")
@@ -2073,7 +1990,7 @@ show_port_historical_details() {
     local monthly_output_formatted=$(format_bytes $monthly_output)
     local monthly_total_formatted=$(format_bytes $monthly_total)
 
-    echo "本月流量情况:(每月1日0点)"
+    echo "本月流量情况(本月1日00:00起)"
     echo "🟢 上行(入站): $monthly_input_formatted | 下行(出站): $monthly_output_formatted | 总计流量: $monthly_total_formatted"
     echo
 
@@ -2081,7 +1998,7 @@ show_port_historical_details() {
     view_traffic_statistics
 }
 
-# 非交互式端口流量排行（供快照通知使用）
+# 非交互式端口流量排行（供流量通知使用）
 get_traffic_ranking_data() {
     local active_ports=($(get_active_ports))
     if [ ${#active_ports[@]} -eq 0 ]; then
@@ -2089,50 +2006,58 @@ get_traffic_ranking_data() {
         return
     fi
 
-    # 创建临时文件存储排序数据
-    local temp_file_double=$(mktemp)
-    local temp_file_single=$(mktemp)
+    # 创建临时数组存储排序数据
+    local double_ports=()
+    local single_ports=()
 
-    # 收集双向统计模式的端口数据（使用月流量数据）
+    # 收集端口数据（使用月流量数据）
     for port in "${active_ports[@]}"; do
         local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"single\"" "$CONFIG_FILE")
         local remark=$(jq -r ".ports.\"$port\".remark // \"\"" "$CONFIG_FILE")
 
         # 获取月流量数据
-        local monthly_traffic=($(get_period_traffic "$port" "monthly"))
+        local monthly_traffic=($(get_month_traffic "$port"))
         local monthly_input=${monthly_traffic[0]:-0}
         local monthly_output=${monthly_traffic[1]:-0}
 
-        # 确保是数字
-        if ! [[ "$monthly_input" =~ ^[0-9]+$ ]]; then
+        # 确保是数字且非负
+        if ! [[ "$monthly_input" =~ ^[0-9]+$ ]] || [ "$monthly_input" -lt 0 ]; then
             monthly_input=0
         fi
-        if ! [[ "$monthly_output" =~ ^[0-9]+$ ]]; then
+        if ! [[ "$monthly_output" =~ ^[0-9]+$ ]] || [ "$monthly_output" -lt 0 ]; then
             monthly_output=0
         fi
 
         local monthly_total=$(calculate_total_traffic "$monthly_input" "$monthly_output" "$billing_mode")
 
+        # 使用分隔符存储数据，避免空格解析问题
         if [ "$billing_mode" = "double" ]; then
-            echo "$monthly_total $port $remark" >> "$temp_file_double"
+            double_ports+=("$monthly_total|$port|$remark")
         else
-            echo "$monthly_total $port $remark" >> "$temp_file_single"
+            single_ports+=("$monthly_total|$port|$remark")
         fi
     done
 
     # 显示双向统计模式排行（前3名）
     echo "双向统计模式:"
     local rank=1
-    if [ -s "$temp_file_double" ]; then
-        while IFS=' ' read -r total_bytes port remark; do
+    if [ ${#double_ports[@]} -gt 0 ]; then
+        # 按流量大小排序并显示前3名
+        local sorted_double
+        readarray -t sorted_double < <(printf '%s\n' "${double_ports[@]}" | sort -t'|' -k1 -nr | head -3)
+        for item in "${sorted_double[@]}"; do
+            local total_bytes=$(echo "$item" | cut -d'|' -f1)
+            local port=$(echo "$item" | cut -d'|' -f2)
+            local remark=$(echo "$item" | cut -d'|' -f3)
+
             local total_formatted=$(format_bytes $total_bytes)
             local remark_display=""
-            if [ -n "$remark" ] && [ "$remark" != "null" ]; then
+            if [ -n "$remark" ] && [ "$remark" != "null" ] && [ "$remark" != "" ]; then
                 remark_display=" [备注:$remark]"
             fi
             echo "$rank. 端口 $port$remark_display 总计流量: $total_formatted"
             rank=$((rank + 1))
-        done < <(sort -nr "$temp_file_double" | head -3)
+        done
     fi
     # 补齐空位到3个
     while [ $rank -le 3 ]; do
@@ -2143,25 +2068,29 @@ get_traffic_ranking_data() {
     # 显示单向统计模式排行（前3名）
     echo "单向统计模式:"
     rank=1
-    if [ -s "$temp_file_single" ]; then
-        while IFS=' ' read -r total_bytes port remark; do
+    if [ ${#single_ports[@]} -gt 0 ]; then
+        # 按流量大小排序并显示前3名
+        local sorted_single
+        readarray -t sorted_single < <(printf '%s\n' "${single_ports[@]}" | sort -t'|' -k1 -nr | head -3)
+        for item in "${sorted_single[@]}"; do
+            local total_bytes=$(echo "$item" | cut -d'|' -f1)
+            local port=$(echo "$item" | cut -d'|' -f2)
+            local remark=$(echo "$item" | cut -d'|' -f3)
+
             local total_formatted=$(format_bytes $total_bytes)
             local remark_display=""
-            if [ -n "$remark" ] && [ "$remark" != "null" ]; then
+            if [ -n "$remark" ] && [ "$remark" != "null" ] && [ "$remark" != "" ]; then
                 remark_display=" [备注:$remark]"
             fi
             echo "$rank. 端口 $port$remark_display 总计流量: $total_formatted"
             rank=$((rank + 1))
-        done < <(sort -nr "$temp_file_single" | head -3)
+        done
     fi
     # 补齐空位到3个
     while [ $rank -le 3 ]; do
         echo "$rank. "
         rank=$((rank + 1))
     done
-
-    # 清理临时文件
-    rm -f "$temp_file_double" "$temp_file_single"
 }
 
 # 端口流量排行
@@ -2481,7 +2410,7 @@ export_config() {
     echo "包含内容："
     echo "  - 主配置文件 (config.json)"
     echo "  - 端口监控数据"
-    echo "  - 历史快照数据"
+    echo "  - 历史流量数据"
     echo "  - 通知配置"
     echo "  - 日志文件"
     echo
@@ -2707,7 +2636,7 @@ import_config() {
     echo -e "${YELLOW}💡 提示：${NC}"
     echo "  - 所有端口监控规则已重新应用"
     echo "  - 通知配置已恢复"
-    echo "  - 历史数据和快照已恢复"
+    echo "  - 历史数据已恢复"
 
     echo
     read -p "按回车键返回..."
@@ -2831,7 +2760,7 @@ uninstall_script() {
     echo "  - 配置目录: $CONFIG_DIR"
     echo "  - 所有nftables规则"
     echo "  - 所有TC限制规则"
-    echo "  - 流量快照定时任务"
+    echo "  - 流量数据记录定时任务"
     echo
     echo -e "${RED}警告：此操作将完全删除端口流量狗及其所有数据！${NC}"
     read -p "确认卸载? [y/N]: " confirm
@@ -2852,7 +2781,7 @@ uninstall_script() {
         nft delete table $family $table_name >/dev/null 2>&1 || true
 
         # 删除定时任务
-        remove_snapshot_cron 2>/dev/null || true
+        remove_daily_record_cron 2>/dev/null || true
         remove_notification_cron 2>/dev/null || true
 
         # 删除配置目录
@@ -2949,7 +2878,7 @@ setup_notification_cron() {
     local snapshot_enabled=$(jq -r '.notifications.telegram.snapshot_notifications.enabled' "$CONFIG_FILE")
     local status_enabled=$(jq -r '.notifications.telegram.status_notifications.enabled' "$CONFIG_FILE")
 
-    # 添加快照通知 - 固定每日23点55分发送（在新快照创建前获取完整数据）
+    # 添加快照通知 - 固定每日23点55分发送
     if [ "$snapshot_enabled" = "true" ]; then
         echo "55 23 * * * $script_path --send-snapshot >/dev/null 2>&1  # 端口流量狗快照通知" >> "$temp_cron"
     fi
@@ -3002,7 +2931,7 @@ setup_port_auto_reset_cron() {
     local monthly_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE")
     if [ "$quota_enabled" = "true" ] && [ "$monthly_limit" != "unlimited" ]; then
         local reset_day=$(jq -r ".ports.\"$port\".quota.reset_day // 1" "$CONFIG_FILE")
-        # 为该端口设置独立的定时任务(00.05重置避免快照冲突)
+        # 为该端口设置独立的定时任务(00:05重置避免数据记录冲突)
         echo "5 0 $reset_day * * $script_path --reset-port $port >/dev/null 2>&1  # 端口流量狗自动重置端口$port" >> "$temp_cron"
     fi
 
@@ -3061,18 +2990,13 @@ format_snapshot_message() {
         local current_input=${current_traffic[0]}
         local current_output=${current_traffic[1]}
 
-        # 获取各时间段流量数据（传入当前流量避免重复获取）
-        local daily_traffic=($(get_period_traffic_cached "$port" "daily" "$current_input" "$current_output"))
-        local weekly_traffic=($(get_period_traffic_cached "$port" "weekly" "$current_input" "$current_output"))
-        local monthly_traffic=($(get_period_traffic_cached "$port" "monthly" "$current_input" "$current_output"))
+        # 获取各时间段流量数据
+        local daily_traffic=($(get_today_traffic "$port"))
+        local monthly_traffic=($(get_month_traffic "$port"))
 
         local daily_input=${daily_traffic[0]:-0}
         local daily_output=${daily_traffic[1]:-0}
         local daily_total=$(calculate_total_traffic "$daily_input" "$daily_output" "$billing_mode")
-
-        local weekly_input=${weekly_traffic[0]:-0}
-        local weekly_output=${weekly_traffic[1]:-0}
-        local weekly_total=$(calculate_total_traffic "$weekly_input" "$weekly_output" "$billing_mode")
 
         local monthly_input=${monthly_traffic[0]:-0}
         local monthly_output=${monthly_traffic[1]:-0}
@@ -3083,11 +3007,9 @@ format_snapshot_message() {
 
         message+="$port_title
 <pre>
-本日流量情况(自昨日23:59起)
+本日流量情况(自今日00:00起)
 🟢 上行(入站): $(format_bytes $daily_input) | 下行(出站): $(format_bytes $daily_output) | 总计流量: $(format_bytes $daily_total)
-本周流量情况(自上周日23:59起)
-🟢 上行(入站): $(format_bytes $weekly_input) | 下行(出站): $(format_bytes $weekly_output) | 总计流量: $(format_bytes $weekly_total)
-本月流量情况(自上月末23:59起)
+本月流量情况(自本月1日00:00起)
 🟢 上行(入站): $(format_bytes $monthly_input) | 下行(出站): $(format_bytes $monthly_output) | 总计流量: $(format_bytes $monthly_total)
 </pre>
 
@@ -3218,13 +3140,12 @@ main() {
                 uninstall_script
                 exit 0
                 ;;
-            --create-snapshot)
-                if [ $# -lt 2 ]; then
-                    echo -e "${RED}错误：--create-snapshot 需要指定时间段参数${NC}"
-                    echo "用法: $0 --create-snapshot [daily|weekly|monthly]"
-                    exit 1
-                fi
-                create_traffic_snapshot "$2"
+            --record-daily)
+                record_daily_data
+                exit 0
+                ;;
+            --cleanup-data)
+                cleanup_old_data
                 exit 0
                 ;;
             --send-snapshot)
@@ -3275,7 +3196,8 @@ main() {
                 echo "  --version                 显示版本信息"
                 echo "  --install                 安装/更新脚本"
                 echo "  --uninstall               卸载脚本"
-                echo "  --create-snapshot PERIOD  创建流量快照 (daily|weekly|monthly)"
+                echo "  --record-daily            记录每日数据"
+                echo "  --cleanup-data            清理过期数据"
                 echo "  --send-snapshot           发送Telegram快照通知"
                 echo "  --send-status             发送Telegram状态通知"
                 echo "  --reset-port PORT         重置指定端口流量"

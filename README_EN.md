@@ -1,10 +1,10 @@
-# realm Full-Featured One-Click Network Forwarding Management, Quick Relay Server Setup, Three Scripts Building Complete Relay Ecosystem
+# realm Full-Featured One-Click Network Forwarding Management, Three Scripts for Quick Relay Server Setup
 
-[中文](README.md) | [English](README_EN.md)
+[中文](README.md) | [English](README_EN.md) | [Port Traffic Dog Introduction](port-traffic-dog-README.md)
 
 ---
 
-> 🚀 **Network Forwarding Management Script** - Integrates all features of the latest official realm version, network connectivity testing, port traffic monitor, maintains minimalist essence, visual rule operations for improved efficiency, pure script-based complete relay ecosystem
+> 🚀 **Network Forwarding Management Script** - Integrates all features of the latest official realm version, network link testing, port traffic dog, maintains extreme simplicity, visual rule operations to improve efficiency, pure script builds complete relay ecosystem
 
 ## 📸 Three Scripts Interface Preview 📸
 
@@ -25,12 +25,12 @@
 **MPTCP Settings Interface**
 ![ead4f6fe61a1f3128a6b9f18dadf6a63.png](https://i.mji.rip/2025/08/28/ead4f6fe61a1f3128a6b9f18dadf6a63.png)
 
-### Port Traffic Monitor
+### Port Traffic Dog
 
 **Main Interface**
 ![1e811dd521314e01a2e533b72580c7a4.png](https://i.mji.rip/2025/08/28/1e811dd521314e01a2e533b72580c7a4.png)
 
-### Relay Network Connectivity Testing Script
+### Relay Network Link Testing Script
 ```
 ===================== Network Link Testing Complete Report =====================
 
@@ -45,7 +45,7 @@
   TCP receive buffer (rmem): 4096   131072  6291456
   TCP send buffer (wmem): 4096   16384   4194304
 
-🧭 TCP Large Packet Routing Path Analysis (based on nexttrace)
+🧭 TCP Large Packet Route Path Analysis (based on nexttrace)
 ─────────────────────────────────────────────────────────────────
  AS path: AS979 > AS209699
  ISP: Private Customer - SBC Internet Services
@@ -67,17 +67,17 @@ DTAG
 ─────────────────────────────────────────────────────────────────
  Image link: https://bgp.tools/pathimg/979-55037bdd89ab4a8a010e70f46a2477ba7456640ec6449f518807dd2e
 ─────────────────────────────────────────────────────────────────
-⚡ Network Performance Analysis (based on hping3 & iperf3)
+⚡ Network Link Parameter Analysis (based on hping3 & iperf3)
 ─────────────────────────────────────────────────────────────────────────────────
-    PING & Jitter             ⬆️ TCP Uplink Bandwidth               ⬇️ TCP Downlink Bandwidth
+    PING & Jitter             ⬆️ TCP Uplink Bandwidth                     ⬇️ TCP Downlink Bandwidth
 ─────────────────────────  ─────────────────────────────  ─────────────────────────────
   Average: 72.3ms          220 Mbps (27.5 MB/s)             10 Mbps (1.2 MB/s)
-  Minimum: 69.5ms          Total transfer: 786 MB           Total transfer: 35.4 MB
-  Maximum: 75.9ms          Retransmissions: 0               Retransmissions: 5712
+  Minimum: 69.5ms          Total transfer: 786 MB             Total transfer: 35.4 MB
+  Maximum: 75.9ms          Retransmissions: 0                    Retransmissions: 5712
   Jitter: 6.4ms
 
 ─────────────────────────────────────────────────────────────────────────────────────────────
- Direction  │ Throughput               │ Packet Loss             │ Jitter
+ Direction  │ Throughput               │ Packet Loss Rate        │ Jitter
 ─────────────────────────────────────────────────────────────────────────────────────────────
  ⬆️ UDP Up   │ 219.0 Mbps (27.4 MB/s)    │ 2021/579336 (0.35%)       │ 0.050 ms
  ⬇️ UDP Down │ 10.0 Mbps (1.2 MB/s)      │ 0/26335 (0%)              │ 0.040 ms
@@ -94,6 +94,12 @@ Test completion time: 2025-08-28 20:12:29 | Script open source: https://github.c
 
 ```bash
 wget -qO- https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xwPF.sh | sudo bash -s install
+```
+
+### Network Restricted Use Accelerated Source, One-Click Installation
+
+```bash
+wget -qO- https://ghfast.top/https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xwPF.sh | sudo bash -s install
 ```
 
 ## 🧭 Offline Installation for No Network Access
@@ -126,13 +132,14 @@ Create any directory to place the script and compressed package files. When star
 - **⚖️ Load Balancing** - Supports round-robin, IP hash strategies with configurable weight distribution
 - **🕳️ Tunnel Building** - Dual-realm architecture supports TLS, ws encrypted transmission for tunnel construction
 - **✍️ Rule Comments** - Clear commenting functionality, no need for additional memorization
-- **🔔 Port Traffic Monitor** - Monitor port traffic statistics, control port bandwidth limiting, flow control, configurable notification methods
+- **🔔 Port Traffic Dog** - Statistics port traffic, control port speed limiting, flow control, configurable notification methods
 - **💻 Intuitive MPTCP System Configuration** - Clear MPTCP interface display
-- **🛜 Network Connectivity Script** - Test network latency, bandwidth, stability, large packet routing analysis (based on hping3 & iperf3 & nexttrace & bgp.tools)
+- **🛜 Network Link Script** - Test link latency, bandwidth, stability, large packet routing (based on hping3 & iperf3 & nexttrace & bgp.tools)
 
 - **📋 One-Click Export** - Package all files into compressed archive for free migration (including comments and all information for complete migration)
 - **📒 One-Click Import** - Recognize exported compressed packages for complete free migration
-- **🔧 Intelligent Detection** - Automatic detection of system architecture, port conflicts, connection availability
+- **🖨️ One-click recognition and import** of custom Realm configuration files; scripts can be recognized and imported
+- **🔧 Smart detection** - Automatically detects system architecture, port conflicts, and connection availability
 
 - **📝 Intelligent Log Management** - Automatic log size limitation to prevent excessive disk usage
 - **🗑️ Complete Uninstallation** - Phased comprehensive cleanup, "I leave gently, just as I came gently"
