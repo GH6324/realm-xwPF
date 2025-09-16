@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 脚本版本
-SCRIPT_VERSION="v2.1.2"
+SCRIPT_VERSION="v2.1.3"
 
 # realm版本,备用 & 自动更新
 REALM_VERSION="v2.9.2"
@@ -859,6 +859,152 @@ get_active_rules_count() {
     echo "$count"
 }
 
+# 同步健康状态文件中的规则ID（重排序后调用）
+sync_health_status_ids() {
+    local health_status_file="/etc/realm/health/health_status.conf"
+
+    # 检查健康状态文件是否存在
+    if [ ! -f "$health_status_file" ]; then
+        return 0
+    fi
+
+    # 创建临时文件
+    local temp_health_file="${health_status_file}.tmp"
+
+    # 保留注释行
+    grep "^#" "$health_status_file" > "$temp_health_file" 2>/dev/null || true
+
+    # 处理健康状态记录
+    while IFS='|' read -r old_rule_id target status fail_count success_count last_check failure_start_time; do
+        # 跳过注释行和空行
+        [[ "$old_rule_id" =~ ^#.*$ ]] && continue
+        [[ -z "$old_rule_id" ]] && continue
+
+        # 根据目标地址查找新的规则ID
+        local new_rule_id=""
+        for rule_file in "${RULES_DIR}"/rule-*.conf; do
+            if [ -f "$rule_file" ] && read_rule_file "$rule_file"; then
+                # 构建目标地址用于匹配
+                local rule_target=""
+                if [ "$RULE_ROLE" = "1" ]; then
+                    # 中转服务器：检查REMOTE_HOST中是否包含目标
+                    if [[ "$REMOTE_HOST" == *"$target"* ]] || [[ "$target" == "${REMOTE_HOST}:${REMOTE_PORT}" ]]; then
+                        new_rule_id="$RULE_ID"
+                        break
+                    fi
+                else
+                    # 落地服务器：检查FORWARD_TARGET
+                    if [[ "$FORWARD_TARGET" == "$target" ]]; then
+                        new_rule_id="$RULE_ID"
+                        break
+                    fi
+                fi
+            fi
+        done
+
+        # 如果找到匹配的规则，更新健康状态记录
+        if [ -n "$new_rule_id" ]; then
+            echo "${new_rule_id}|${target}|${status}|${fail_count}|${success_count}|${last_check}|${failure_start_time}" >> "$temp_health_file"
+        fi
+        # 如果没找到匹配的规则，该健康状态记录将被丢弃（规则已删除）
+
+    done < <(grep -v "^#" "$health_status_file" 2>/dev/null || true)
+
+    # 原子性替换健康状态文件
+    if [ -f "$temp_health_file" ]; then
+        mv "$temp_health_file" "$health_status_file"
+    fi
+}
+
+# 规则ID重排序函数 - 按端口从小到大，同端口内按服务器类型排序
+reorder_rule_ids() {
+    if [ ! -d "$RULES_DIR" ]; then
+        return 0
+    fi
+
+    # 检查是否有规则文件
+    local rule_count=$(ls -1 "${RULES_DIR}"/rule-*.conf 2>/dev/null | wc -l)
+    if [ "$rule_count" -eq 0 ]; then
+        return 0
+    fi
+
+    # 收集所有规则信息
+    local temp_file=$(mktemp)
+
+    for rule_file in "${RULES_DIR}"/rule-*.conf; do
+        if [ -f "$rule_file" ]; then
+            if read_rule_file "$rule_file"; then
+                # 格式：端口|角色|当前ID|文件路径
+                # 角色排序：1(中转)在前，2(落地)在后
+                echo "${LISTEN_PORT}|${RULE_ROLE}|${RULE_ID}|${rule_file}" >> "$temp_file"
+            fi
+        fi
+    done
+
+    # 按端口从小到大排序，同端口内按角色排序(中转优先)，最后按原ID排序保持稳定
+    local sorted_rules=($(sort -t'|' -k1,1n -k2,2n -k3,3n "$temp_file"))
+    rm -f "$temp_file"
+
+    if [ ${#sorted_rules[@]} -eq 0 ]; then
+        return 0
+    fi
+
+    # 创建临时目录进行原子性操作
+    local temp_dir=$(mktemp -d)
+    local new_id=1
+    local reorder_needed=false
+
+    # 检查是否需要重排序
+    for rule_data in "${sorted_rules[@]}"; do
+        IFS='|' read -r port role old_id old_file <<< "$rule_data"
+        if [ "$old_id" -ne "$new_id" ]; then
+            reorder_needed=true
+            break
+        fi
+        new_id=$((new_id + 1))
+    done
+
+    # 如果不需要重排序，直接返回
+    if [ "$reorder_needed" = false ]; then
+        rmdir "$temp_dir"
+        return 0
+    fi
+
+    # 执行重排序
+    new_id=1
+    for rule_data in "${sorted_rules[@]}"; do
+        IFS='|' read -r port role old_id old_file <<< "$rule_data"
+
+        # 创建新文件
+        local temp_new_file="${temp_dir}/rule-${new_id}.conf"
+
+        # 复制文件并更新RULE_ID
+        if cp "$old_file" "$temp_new_file"; then
+            sed -i "s/^RULE_ID=.*/RULE_ID=$new_id/" "$temp_new_file"
+        else
+            echo -e "${RED}错误: 无法复制规则文件${NC}" >&2
+            rm -rf "$temp_dir"
+            return 1
+        fi
+
+        new_id=$((new_id + 1))
+    done
+
+    # 原子性替换：先删除旧文件，再移动新文件
+    if rm -f "${RULES_DIR}"/rule-*.conf && mv "${temp_dir}"/rule-*.conf "${RULES_DIR}/"; then
+        rmdir "$temp_dir"
+
+        # 同步更新健康状态文件中的规则ID
+        sync_health_status_ids
+
+        return 0
+    else
+        echo -e "${RED}错误: 规则重排序失败${NC}" >&2
+        rm -rf "$temp_dir"
+        return 1
+    fi
+}
+
 # 生成新的规则ID
 generate_rule_id() {
     local max_id=0
@@ -1179,28 +1325,6 @@ display_single_rule_info() {
 }
 
 
-
-
-# 根据序号获取规则ID
-get_rule_id_by_index() {
-    local index="$1"
-    local count=0
-
-    for rule_file in "${RULES_DIR}"/rule-*.conf; do
-        if [ -f "$rule_file" ]; then
-            if read_rule_file "$rule_file"; then
-                count=$((count + 1))
-                if [ "$count" -eq "$index" ]; then
-                    echo "$RULE_ID"
-                    return 0
-                fi
-            fi
-        fi
-    done
-
-    return 1
-}
-
 # 列出所有规则（详细信息，用于查看）
 list_all_rules() {
     echo -e "${YELLOW}=== 所有转发规则 ===${NC}"
@@ -1348,6 +1472,13 @@ interactive_add_rule() {
     TLS_KEY_PATH="$ORIG_TLS_KEY_PATH"
 
     echo ""
+
+    # 重排序规则ID以保持最优排序
+    echo -e "${BLUE}正在规则排序...${NC}"
+    if reorder_rule_ids; then
+        echo -e "${GREEN}✓ 规则排序优化完成${NC}"
+    fi
+
     return 0
 }
 
@@ -1382,6 +1513,15 @@ delete_rule() {
         # 删除规则文件
         if rm -f "$rule_file"; then
             echo -e "${GREEN}✓ 规则 $rule_id 已删除${NC}"
+
+            # 重排序规则ID以保持最优排序
+            if [ "$skip_confirm" != "true" ]; then
+                echo -e "${BLUE}正在规则排序...${NC}"
+                if reorder_rule_ids; then
+                    echo -e "${GREEN}✓ 规则排序优化完成${NC}"
+                fi
+            fi
+
             return 0
         else
             echo -e "${RED}✗ 规则 $rule_id 删除失败${NC}"
@@ -1440,6 +1580,13 @@ batch_delete_rules() {
         done
         echo ""
         echo -e "${GREEN}批量删除完成，共删除 $deleted_count 个规则${NC}"
+
+        # 重排序规则ID以保持最优排序
+        echo -e "${BLUE}正在规则排序...${NC}"
+        if reorder_rule_ids; then
+            echo -e "${GREEN}✓ 规则排序优化完成${NC}"
+        fi
+
         return 0
     else
         echo "批量删除已取消"
@@ -1860,24 +2007,17 @@ download_realm_ocr_script() {
 
 # 识别realm配置文件并导入
 import_realm_config() {
-    # 下载识别脚本
     local ocr_script="/etc/realm/xw_realm_OCR.sh"
-    if [ ! -f "$ocr_script" ]; then
-        if ! download_realm_ocr_script; then
-            read -p "按回车键返回..."
-            return
-        fi
+
+    # 每次都下载最新版本
+    if ! download_realm_ocr_script; then
+        echo -e "${RED}无法下载配置识别脚本，功能暂时不可用${NC}"
+        read -p "按回车键返回..."
+        return 1
     fi
 
-    # 直接调用识别脚本，传递规则目录参数
+    # 直接调用识别脚本，传递规则目录参数（脚本内部已包含重启逻辑）
     bash "$ocr_script" "$RULES_DIR"
-
-    # 如果导入成功，重启服务
-    if [ $? -eq 0 ]; then
-        echo ""
-        echo -e "${YELLOW}正在重启服务以应用新配置...${NC}"
-        service_restart
-    fi
 
     echo ""
     read -p "按回车键返回..."
@@ -5514,6 +5654,9 @@ generate_endpoints_from_rules() {
         return 0
     fi
 
+    # 确保规则ID排序是最优的
+    reorder_rule_ids
+
     # 健康状态读取（直接读取健康状态文件）
     declare -A health_status
     local health_status_file="/etc/realm/health/health_status.conf"
@@ -6208,6 +6351,12 @@ service_stop() {
 # 服务管理 - 重启
 service_restart() {
     echo -e "${YELLOW}正在重启 Realm 服务...${NC}"
+
+    # 重排序规则ID以保持最优排序
+    echo -e "${BLUE}正在规则排序...${NC}"
+    if reorder_rule_ids; then
+        echo -e "${GREEN}✓ 规则排序优化完成${NC}"
+    fi
 
     # 重新生成配置文件
     echo -e "${BLUE}重新生成配置文件...${NC}"
@@ -7028,10 +7177,6 @@ main() {
             ;;
     esac
 }
-
-
-
-
 
 # 创建最简单的文件清理定时器
 create_simple_cleanup_timer() {

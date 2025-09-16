@@ -467,16 +467,8 @@ done
 if [ "$config_changed" = true ]; then
     echo "$(date '+%Y-%m-%d %H:%M:%S') [CONFIG] 检测到节点状态变化，正在更新配置..."
 
-    # 调用xwPF.sh的重启接口
-    if command -v pf >/dev/null 2>&1; then
-        pf --restart-service >/dev/null 2>&1
-    elif [ -f "/usr/local/bin/xwPF.sh" ]; then
-        bash "/usr/local/bin/xwPF.sh" --restart-service >/dev/null 2>&1
-    elif [ -f "/root/xwPF.sh" ]; then
-        bash "/root/xwPF.sh" --restart-service >/dev/null 2>&1
-    else
-        echo "$(date '+%Y-%m-%d %H:%M:%S') [ERROR] 未找到主脚本，无法更新配置"
-    fi
+    # 直接调用主脚本的重启接口
+    pf --restart-service >/dev/null 2>&1
 
     echo "$(date '+%Y-%m-%d %H:%M:%S') [CONFIG] 配置更新完成"
 fi
@@ -622,21 +614,8 @@ show_help() {
 restart_realm_service() {
     echo -e "${BLUE}调用主脚本的重启接口...${NC}"
 
-    # 尝试调用常见的xwPF.sh命令
-    if command -v pf >/dev/null 2>&1; then
-        pf --restart-service
-        return $?
-    elif [ -f "/usr/local/bin/xwPF.sh" ]; then
-        bash "/usr/local/bin/xwPF.sh" --restart-service
-        return $?
-    elif [ -f "/root/xwPF.sh" ]; then
-        bash "/root/xwPF.sh" --restart-service
-        return $?
-    else
-        echo -e "${RED}✗ 未找到主脚本，无法重启服务${NC}"
-        echo -e "${YELLOW}请确保xwPF.sh已正确安装${NC}"
-        return 1
-    fi
+    # 直接调用主脚本的重启接口
+    pf --restart-service
 }
 
 # 主函数

@@ -11,37 +11,17 @@ BLUE='\033[0;34m'
 WHITE='\033[1;37m'
 NC='\033[0m'
 
-# 获取GMT+8时间（复制自主脚本）
+# 获取GMT+8时间
 get_gmt8_time() {
     TZ='GMT-8' date "$@"
 }
 
-# 生成新的规则ID(主脚本)
+# 规则ID生成器（临时使用，最终由主脚本重排序）
+# 生成唯一ID
 generate_rule_id() {
-    local max_id=0
-    # 检查现有规则目录
-    if [ -d "$RULES_DIR" ]; then
-        for rule_file in "${RULES_DIR}"/rule-*.conf; do
-            if [ -f "$rule_file" ]; then
-                local id=$(basename "$rule_file" | sed 's/rule-\([0-9]*\)\.conf/\1/')
-                if [ "$id" -gt "$max_id" ]; then
-                    max_id=$id
-                fi
-            fi
-        done
-    fi
-    # 检查临时输出目录（避免导入时ID重复）
-    if [ -d "$OUTPUT_DIR" ]; then
-        for rule_file in "${OUTPUT_DIR}"/rule-*.conf; do
-            if [ -f "$rule_file" ]; then
-                local id=$(basename "$rule_file" | sed 's/rule-\([0-9]*\)\.conf/\1/')
-                if [ "$id" -gt "$max_id" ]; then
-                    max_id=$id
-                fi
-            fi
-        done
-    fi
-    echo $((max_id + 1))
+    # 基于已生成的文件数量生成临时ID
+    local existing_count=$(ls -1 "$OUTPUT_DIR"/rule-*.conf 2>/dev/null | wc -l)
+    echo $((existing_count + 1))
 }
 
 # 配置路径定义（与主脚本保持一致）
@@ -58,6 +38,11 @@ fi
 
 echo -e "${YELLOW}=== 识别realm配置文件并导入 ===${NC}"
 echo ""
+
+# 确保工作目录存在
+if ! pwd >/dev/null 2>&1; then
+    cd /tmp
+fi
 
 # 输入配置文件路径
 read -p "请输入配置文件的完整路径：" CONFIG_FILE
@@ -578,6 +563,13 @@ rm -rf "$OUTPUT_DIR"
 
 if [ $imported_count -gt 0 ]; then
     echo -e "${GREEN}✓ realm配置导入成功，共导入 $imported_count 个规则${NC}"
+    echo ""
+    echo -e "${YELLOW}正在重启服务并优化规则排序...${NC}"
+
+    # 直接调用主脚本的重启接口（包含自动排序功能）
+    pf --restart-service
+
+    echo -e "${GREEN}✓ 配置导入和优化完成${NC}"
     exit 0
 else
     echo -e "${RED}✗ 配置导入失败${NC}"
