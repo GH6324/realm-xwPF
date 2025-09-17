@@ -122,12 +122,6 @@ declare -A TEST_RESULTS=(
     ["udp_down_speed_mibs"]=""
     ["udp_down_loss"]=""
     ["udp_down_jitter"]=""
-
-    # 路由分析结果
-    ["route_as_path"]=""
-    ["route_isp_path"]=""
-    ["route_geo_path"]=""
-    ["route_map_url"]=""
 )
 
 # 辅助函数：安全设置测试结果
@@ -154,7 +148,6 @@ declare -A REQUIRED_TOOLS=(
     ["iperf3"]="apt:iperf3"
     ["hping3"]="apt:hping3"
     ["bc"]="apt:bc"
-    ["nexttrace"]="custom:nexttrace"
     ["nc"]="apt:netcat-openbsd"
 )
 
@@ -193,39 +186,6 @@ get_missing_tools() {
 }
 
 
-# 安装nexttrace
-install_nexttrace() {
-    echo -e "${BLUE}🔧 安装 nexttrace...${NC}"
-
-    # 检测系统架构
-    local arch=$(uname -m)
-    local download_url
-
-    case "$arch" in
-        "x86_64")
-            download_url="https://github.com/nxtrace/NTrace-core/releases/latest/download/nexttrace_linux_amd64"
-            ;;
-        "aarch64")
-            download_url="https://github.com/nxtrace/NTrace-core/releases/latest/download/nexttrace_linux_arm64"
-            ;;
-        "armv7l")
-            download_url="https://github.com/nxtrace/NTrace-core/releases/latest/download/nexttrace_linux_armv7"
-            ;;
-        *)
-            echo -e "${RED}✗ 不支持的系统架构: $arch${NC}"
-            return 1
-            ;;
-    esac
-
-    # 使用统一多源下载函数
-    if download_from_sources "$download_url" "/usr/local/bin/nexttrace"; then
-        chmod +x /usr/local/bin/nexttrace
-        return 0
-    else
-        return 1
-    fi
-}
-
 # 安装单个APT工具
 install_apt_tool() {
     local tool="$1"
@@ -246,23 +206,8 @@ install_apt_tool() {
 # 安装自定义工具
 install_custom_tool() {
     local tool="$1"
-
-    case "$tool" in
-        "nexttrace")
-            if install_nexttrace; then
-                echo -e "${GREEN}✅ nexttrace 安装成功${NC}"
-                TOOL_STATUS["nexttrace"]="installed"
-                return 0
-            else
-                echo -e "${RED}✗ nexttrace 安装失败${NC}"
-                return 1
-            fi
-            ;;
-        *)
-            echo -e "${RED}✗ 未知的自定义工具: $tool${NC}"
-            return 1
-            ;;
-    esac
+    echo -e "${RED}✗ 未知的自定义工具: $tool${NC}"
+    return 1
 }
 
 
@@ -1278,672 +1223,6 @@ run_udp_download_test() {
     echo ""
 }
 
-# 检测IP地址版本
-detect_ip_version() {
-    local ip="$1"
-    if [[ $ip =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-        echo "ipv4"
-    elif [[ $ip =~ ^[0-9a-fA-F:]+$ ]] && [[ $ip == *":"* ]]; then
-        echo "ipv6"
-    else
-        echo "unknown"
-    fi
-}
-
-# 检测文本是否包含非ASCII字符
-contains_non_ascii() {
-    local text="$1"
-    if LC_ALL=C echo "$text" | grep -q '[^ -~]'; then
-        return 0
-    else
-        return 1
-    fi
-}
-
-# 从nexttrace输出行中提取地理位置信息
-extract_geo_info() {
-    local line="$1"
-
-    # 移除行号、IP地址、AS号码等前缀，保留地理信息部分
-    local content=$(echo "$line" | sed 's/^[[:space:]]*[0-9]\+[[:space:]]\+[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}[[:space:]]\+AS[0-9]\+[[:space:]]*\(\[[^]]*\]\)*[[:space:]]*//')
-
-    if [ -z "$content" ] || [ "$content" = "*" ]; then
-        return
-    fi
-
-    local geo_part="$content"
-
-    # 移除域名和运营商标识，保留地理信息
-    geo_part=$(echo "$geo_part" | sed 's/[[:space:]]*[a-zA-Z0-9.-]*\.[a-zA-Z]\{2,\}.*$//')
-    geo_part=$(echo "$geo_part" | sed 's/[[:space:]]*[A-Z]\+[[:space:]]*$//')
-
-    geo_part=$(echo "$geo_part" | sed 's/[[:space:]]*[A-Z0-9]\+[[:space:]]*$//')
-    geo_part=$(echo "$geo_part" | sed 's/[[:space:]]*\[.*\][[:space:]]*$//')
-    geo_part=$(echo "$geo_part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/[[:space:]]\+/ /g')
-
-    if [ -n "$geo_part" ] && [ "$geo_part" != "*" ] && [ ${#geo_part} -gt 2 ]; then
-        if ! echo "$geo_part" | grep -qE '^[0-9]+$|^RFC[0-9]+$|^[A-Z]+$|^[a-z]+$'; then
-            if contains_non_ascii "$geo_part" || echo "$geo_part" | grep -q '[[:space:]]'; then
-                echo "$geo_part"
-            fi
-        fi
-    fi
-}
-
-# 从nexttrace输出行中提取运营商信息
-extract_isp_info() {
-    local line="$1"
-    local isp=""
-
-    # 跳过私有地址行
-    if echo "$line" | grep -q "RFC1918"; then
-        return
-    fi
-
-    # 必须包含AS号码或方括号标签
-    if ! echo "$line" | grep -qE "AS[0-9]+|\[[^]]+\]"; then
-        return
-    fi
-
-    # 优先级1：提取方括号中的标签（如[CHINANET-GD]）
-    isp=$(echo "$line" | grep -o '\[[^]]*\]' | sed 's/\[//; s/\]//' | head -1)
-    if [ -n "$isp" ] && [ ${#isp} -gt 2 ]; then
-        echo "$isp"
-        return
-    fi
-
-    # 优先级2：提取域名
-    if echo "$line" | grep -q "AS[0-9]\+"; then
-        isp=$(echo "$line" | grep -oE '[a-zA-Z0-9.-]+\.(com|net|org|io|co|in|cn|uk|de|fr|jp|kr|au|ca|ru|br|mx|it|es|nl|se|no|dk|fi|pl|cz|hu|ro|bg|hr|si|sk|ee|lv|lt|mt|cy|lu|be|at|ch|li|mc|sm|va|ad|gi|im|je|gg|fo|gl|is|tr|gr|mk|al|ba|rs|me|xk|md|ua|by|kz|uz|kg|tj|tm|az|ge|am|ir|iq|sy|lb|jo|ps|il|sa|ae|om|ye|kw|qa|bh|pk|af|bd|bt|np|lk|mv|mm|th|la|kh|vn|my|sg|bn|id|tl|ph|tw|hk|mo|mn|kp|kr|jp)' | head -1)
-        if [ -n "$isp" ]; then
-            echo "$isp"
-            return
-        fi
-    fi
-
-    # 优先级3：提取公司名称
-    if echo "$line" | grep -q "AS[0-9]\+"; then
-        local content=$(echo "$line" | sed 's/^[[:space:]]*[0-9]\+[[:space:]]\+[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}[[:space:]]\+AS[0-9]\+[[:space:]]*\(\[[^]]*\]\)*[[:space:]]*//')
-
-        if [ -z "$content" ] || [ "$content" = "*" ]; then
-            return
-        fi
-
-        # 分离地理信息和运营商信息
-        local remaining=$(echo "$content" | sed 's/.*[a-zA-Z0-9.-]*\.[a-zA-Z]\{2,\}[[:space:]]*//')
-
-        if [ -z "$remaining" ] && contains_non_ascii "$content"; then
-            remaining=$(echo "$content" | sed 's/.*[^ -~][[:space:]]*//')
-        fi
-
-        if [ -z "$remaining" ]; then
-            remaining="$content"
-        fi
-
-        if [ -n "$remaining" ]; then
-            remaining=$(echo "$remaining" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-
-            if [ -n "$remaining" ] && [ ${#remaining} -gt 2 ] && [ "$remaining" != "*" ]; then
-                if ! echo "$remaining" | grep -qE '^[0-9]+$|^RFC[0-9]+$|^AS\*?$|^\*+$'; then
-                    echo "$remaining"
-                fi
-            fi
-        fi
-    fi
-}
-
-extract_route_path_block() {
-    local route_output="$1"
-
-    # 查找Route-Path数据块
-    echo "$route_output" | awk '
-        /^[[:space:]]*[╰╭│]/ {
-            in_route_path = 1
-        }
-        in_route_path && /^[[:space:]]*[╰╭│]/ {
-            print $0
-        }
-        in_route_path && !/^[[:space:]]*[╰╭│]/ && NF > 0 {
-            exit
-        }
-    '
-}
-
-# 从Route-Path数据中提取地理信息
-extract_route_path_geo() {
-    local route_path_data="$1"
-
-    if [ -z "$route_path_data" ]; then
-        return
-    fi
-
-    # 提取「国家『城市』」格式的地理信息
-    echo "$route_path_data" | while IFS= read -r line; do
-        local geo=$(echo "$line" | grep -o '「[^」]*『[^』]*』」')
-        if [ -n "$geo" ]; then
-            # 转换为"国家 城市"格式
-            geo=$(echo "$geo" | sed 's/「//; s/』」//; s/『/ /')
-
-            # 去重相同地名（如Singapore Singapore -> Singapore）
-            if echo "$geo" | grep -q '^[[:space:]]*\([^[:space:]]\+\)[[:space:]]\+\1[[:space:]]*$'; then
-                geo=$(echo "$geo" | awk '{print $1}')
-            fi
-
-            geo=$(echo "$geo" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-
-            if [ -n "$geo" ] && [ "$geo" != " " ]; then
-                echo "$geo"
-            fi
-        fi
-    done | awk '!seen[$0]++'
-}
-
-# 从Route-Path数据中提取运营商信息
-extract_route_path_isp() {
-    local route_path_data="$1"
-
-    if [ -z "$route_path_data" ]; then
-        return
-    fi
-
-    echo "$route_path_data" | while IFS= read -r line; do
-        # 提取AS号码后到「之前的公司名称
-        local isp=$(echo "$line" | sed 's/^[[:space:]]*[╰╭│][[:space:]]*//' | sed 's/^AS[0-9]\+[[:space:]]*//')
-        isp=$(echo "$isp" | sed 's/「.*$//')
-        isp=$(echo "$isp" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-
-        if [ -n "$isp" ] && [ ${#isp} -gt 2 ]; then
-            echo "$isp"
-        fi
-    done | awk '!seen[$0]++'
-}
-
-# 从Route-Path数据中提取AS路径
-extract_route_path_as() {
-    local route_path_data="$1"
-
-    if [ -z "$route_path_data" ]; then
-        return
-    fi
-
-    echo "$route_path_data" | while IFS= read -r line; do
-        local as_num=$(echo "$line" | grep -o 'AS[0-9]\+')
-        if [ -n "$as_num" ]; then
-            echo "$as_num"
-        fi
-    done | awk '!seen[$0]++'
-}
-
-# 解析路由分析结果
-parse_route_summary() {
-    local route_output="$1"
-    local used_command="$2"
-
-    # 提取Route-Path数据块
-    local route_path_data=$(extract_route_path_block "$route_output")
-    local final_as_path=""
-    local final_isp_path=""
-    local final_geo_path=""
-
-    # 优先使用Route-Path数据
-    if [ -n "$route_path_data" ]; then
-        # 提取AS路径
-        local as_list=$(extract_route_path_as "$route_path_data")
-        if [ -n "$as_list" ]; then
-            final_as_path=$(echo "$as_list" | paste -sd '>' | sed 's/>/ > /g')
-        fi
-
-        # 提取运营商路径
-        local isp_list=$(extract_route_path_isp "$route_path_data")
-        if [ -n "$isp_list" ]; then
-            final_isp_path=$(echo "$isp_list" | paste -sd '>' | sed 's/>/ > /g')
-        fi
-
-        # 提取地理路径
-        local geo_list=$(extract_route_path_geo "$route_path_data")
-        if [ -n "$geo_list" ]; then
-            final_geo_path=$(echo "$geo_list" | paste -sd '>' | sed 's/>/ > /g')
-        fi
-    else
-        # 回退到普通traceroute解析
-        local as_numbers=$(echo "$route_output" | grep -oE "AS[0-9]+" | awk '!seen[$0]++' | head -6)
-        if [ -n "$as_numbers" ]; then
-            local first=true
-            while IFS= read -r as_num; do
-                if [ -n "$as_num" ]; then
-                    if [ "$first" = true ]; then
-                        final_as_path="$as_num"
-                        first=false
-                    else
-                        final_as_path="$final_as_path > $as_num"
-                    fi
-                fi
-            done <<< "$as_numbers"
-        fi
-
-        echo "$route_output" | grep "AS[0-9]" | grep -v "RFC1918" | while IFS= read -r line; do
-            extract_isp_info "$line"
-        done | awk '!seen[$0]++' > /tmp/isp_list_$$
-
-        if [ -f "/tmp/isp_list_$$" ] && [ -s "/tmp/isp_list_$$" ]; then
-            final_isp_path=$(cat /tmp/isp_list_$$ | paste -sd '>' | sed 's/>/ > /g')
-            rm -f /tmp/isp_list_$$
-        fi
-
-        # 提取地理信息
-        echo "$route_output" | grep "AS[0-9]" | grep -v "RFC1918" | while IFS= read -r line; do
-            extract_geo_info "$line"
-        done | awk '!seen[$0]++' > /tmp/geo_list_$$
-
-        if [ -f "/tmp/geo_list_$$" ] && [ -s "/tmp/geo_list_$$" ]; then
-            final_geo_path=$(cat /tmp/geo_list_$$ | paste -sd '>' | sed 's/>/ > /g')
-            rm -f /tmp/geo_list_$$
-        fi
-    fi
-
-    # 提取地图链接
-    local map_url=$(echo "$route_output" | grep -o "https://assets\.nxtrace\.org/tracemap/[^[:space:]]*\.html")
-
-    # 收集路由分析数据
-    set_test_result "route_as_path" "$final_as_path"
-    set_test_result "route_isp_path" "$final_isp_path"
-    set_test_result "route_geo_path" "$final_geo_path"
-    set_test_result "route_map_url" "$map_url"
-
-    # 输出总结
-    echo -e "${GREEN}📊 路由分析总结 (去程)${NC}"
-    echo ""
-
-    [ -n "$used_command" ] && echo -e "${YELLOW}使用指令:${NC} ${used_command}"
-    [ -n "$final_as_path" ] && echo -e "${BLUE}🌐 AS路径:${NC} ${final_as_path}"
-    [ -n "$final_isp_path" ] && echo -e "${BLUE}🏢 运营商路径:${NC} ${final_isp_path}"
-    [ -n "$final_geo_path" ] && echo -e "${BLUE}🌍 地理路径:${NC} ${final_geo_path}"
-    [ -n "$map_url" ] && echo -e "${BLUE}🗺️  地图展示:${NC} ${map_url}"
-    echo ""
-}
-
-# 执行路由分析
-run_route_analysis() {
-    echo -e "${YELLOW}🟢 大包路由跟踪分析${NC}"
-    echo ""
-
-    # 使用nexttrace进行路由跟踪
-    if check_tool "nexttrace"; then
-        echo -e "${BLUE}nexttrace 路由分析 - 目标: ${TARGET_IP}:${TARGET_PORT}${NC}"
-
-        # 检测IP版本并构建命令
-        local ip_version=$(detect_ip_version "$TARGET_IP")
-        local nexttrace_cmd="nexttrace"
-
-        # 添加IP版本参数
-        if [ "$ip_version" = "ipv4" ]; then
-            nexttrace_cmd="$nexttrace_cmd --ipv4"
-        elif [ "$ip_version" = "ipv6" ]; then
-            nexttrace_cmd="$nexttrace_cmd --ipv6"
-        fi
-
-        # 添加其他优化参数 (使用TCP模式，发送1024字节大包数据)
-        nexttrace_cmd="$nexttrace_cmd --tcp --port $TARGET_PORT --psize 1024 --route-path --queries 3 --max-hops 25"
-
-        echo ""
-
-        # 执行nexttrace命令
-        local route_output=$($nexttrace_cmd "$TARGET_IP" 2>/dev/null)
-        local route_exit_code=$?
-
-        if [ $route_exit_code -eq 0 ] && [ -n "$route_output" ]; then
-            echo -e "${BLUE}📋 测试数据:${NC}"
-            # 过滤掉Route-Path功能实验室部分和MapTrace URL
-            echo "$route_output" | sed '/Route-Path 功能实验室/,$d'
-            echo ""
-
-            # 解析路由信息
-            parse_route_summary "$route_output" "$nexttrace_cmd $TARGET_IP"
-
-            ROUTE_SUCCESS=true
-        else
-            echo -e "${RED}路由分析失败，尝试基础模式...${NC}"
-
-            # 降级到基础模式
-            local basic_output=$(nexttrace "$TARGET_IP" 2>/dev/null)
-            local basic_exit_code=$?
-
-            if [ $basic_exit_code -eq 0 ] && [ -n "$basic_output" ]; then
-                echo -e "${BLUE}📋 测试数据:${NC}"
-                echo "$basic_output"
-                echo ""
-
-                # 解析路由信息
-                parse_route_summary "$basic_output" "nexttrace --ipv4 --tcp --port $TARGET_PORT $TARGET_IP"
-
-                ROUTE_SUCCESS=true
-            else
-                echo -e "${RED}❌ 路由分析完全失败${NC}"
-                ROUTE_SUCCESS=false
-            fi
-        fi
-    else
-        echo -e "${YELLOW}⚠️  nexttrace工具不可用，跳过路由分析${NC}"
-        ROUTE_SUCCESS=false
-    fi
-    echo ""
-}
-
-# BGP对等体关系分析
-run_bgp_analysis() {
-    echo -e "${GREEN}🟢 BGP对等体关系分析${NC}"
-
-    local public_ip=$(get_public_ip)
-    if [ -z "$public_ip" ]; then
-        echo -e "${YELLOW}⚠️  无法获取公网IP，跳过BGP分析${NC}"
-        echo ""
-        return
-    fi
-
-    # 通过IP获取ASN信息
-    local ipinfo_result=$(curl -s --connect-timeout $LONG_CONNECT_TIMEOUT --max-time $LONG_MAX_TIMEOUT -A "$USER_AGENT" "https://ipinfo.io/$public_ip/json" 2>/dev/null)
-    if [ -z "$ipinfo_result" ]; then
-        echo -e "${YELLOW}⚠️  无法获取IP信息，跳过BGP分析${NC}"
-        echo ""
-        return
-    fi
-
-    # 提取ASN号码和组织名称
-    local org_field=$(echo "$ipinfo_result" | grep '"org"' | sed 's/.*"org": *"\([^"]*\)".*/\1/')
-    if [ -z "$org_field" ]; then
-        # 备用方案：使用awk解析
-        org_field=$(echo "$ipinfo_result" | awk -F'"' '/org/ {print $4}')
-    fi
-    local asn=$(echo "$org_field" | grep -o 'AS[0-9][0-9]*' | sed 's/AS//')
-    local org_name=$(echo "$org_field" | sed 's/AS[0-9][0-9]* *//')
-
-    if [ -z "$asn" ]; then
-        echo -e "${YELLOW}⚠️  无法解析ASN信息，跳过BGP分析${NC}"
-        echo ""
-        return
-    fi
-
-    # 获取AS页面内容
-    local as_page=$(curl -s --connect-timeout $LONG_CONNECT_TIMEOUT --max-time $LONG_MAX_TIMEOUT -A "$USER_AGENT" "https://bgp.tools/as/$asn" 2>/dev/null)
-    if [ -z "$as_page" ]; then
-        echo -e "${YELLOW}⚠️  无法获取AS页面信息${NC}"
-        echo ""
-        return
-    fi
-
-    # 提取policy hash值
-    local policy_hash=$(echo "$as_page" | grep -o '<option selected value="[^"]*"' | sed 's/<option selected value="//; s/"//')
-    if [ -z "$policy_hash" ]; then
-        policy_hash=$(echo "$as_page" | grep -o '<option value="[^"]*"' | grep -v 'disabled-default' | head -1 | sed 's/<option value="//; s/"//')
-    fi
-
-    local pathimg_url=""
-    if [ -n "$policy_hash" ]; then
-        pathimg_url="/pathimg/$asn-$policy_hash"
-    fi
-
-    # 获取SVG图片数据
-    local svg_data=""
-    local all_asn_data=""
-    local total_asn_count=0
-
-    if [ -n "$pathimg_url" ]; then
-        svg_data=$(curl -s --connect-timeout $LONG_CONNECT_TIMEOUT --max-time $LONG_MAX_TIMEOUT -A "$USER_AGENT" "https://bgp.tools$pathimg_url" 2>/dev/null)
-
-        if [ -n "$svg_data" ]; then
-            # 解析SVG节点数据
-            local temp_asn_data=$(echo "$svg_data" | sed -n '/<g id="node[0-9]*" class="node">/,/<\/g>/p' | while IFS= read -r line; do
-                if echo "$line" | grep -q '<title>AS[0-9]*</title>'; then
-                    local node_asn=$(echo "$line" | grep -o 'AS[0-9]*' | sed 's/AS//')
-                    local stroke_color=""
-                    local short_name=""
-
-                    while IFS= read -r next_line; do
-                        if echo "$next_line" | grep -q 'stroke=' && [ -z "$stroke_color" ]; then
-                            if echo "$next_line" | grep -q 'stroke="limegreen"'; then
-                                stroke_color="origin"
-                            elif echo "$next_line" | grep -q 'stroke="#005ea5"'; then
-                                stroke_color="tier1"
-                            elif echo "$next_line" | grep -q 'stroke="black"'; then
-                                stroke_color="other"
-                            else
-                                stroke_color="unknown"
-                            fi
-                        fi
-
-                        if echo "$next_line" | grep -q 'font-size="10.00"' && [ -z "$short_name" ]; then
-                            short_name=$(echo "$next_line" | sed 's/.*>\([^<]*\)<.*/\1/')
-                            # HTML实体解码
-                            short_name=$(echo "$short_name" | sed 's/&amp;/\&/g; s/&#45;/-/g; s/&lt;/</g; s/&gt;/>/g; s/&quot;/"/g; s/&#39;/'"'"'/g')
-                        fi
-
-                        if [ -n "$stroke_color" ] && [ -n "$short_name" ]; then
-                            echo "$node_asn|$short_name|$stroke_color"
-                            break
-                        elif echo "$next_line" | grep -q '</g>'; then
-                            [ -z "$short_name" ] && short_name="Unknown"
-                            [ -z "$stroke_color" ] && stroke_color="unknown"
-                            echo "$node_asn|$short_name|$stroke_color"
-                            break
-                        fi
-                    done
-                fi
-            done)
-
-            # 按类型排序：本机 → 其他 → Tier1
-            local origin_data=$(echo "$temp_asn_data" | grep "|origin$")
-            local other_data=$(echo "$temp_asn_data" | grep "|other$")
-            local tier1_data=$(echo "$temp_asn_data" | grep "|tier1$")
-            local unknown_data=$(echo "$temp_asn_data" | grep "|unknown$")
-
-            all_asn_data=$(echo -e "$origin_data\n$other_data\n$tier1_data\n$unknown_data" | grep -v '^$')
-            total_asn_count=$(echo "$all_asn_data" | grep -c '^' 2>/dev/null || echo 0)
-        fi
-    fi
-
-    # 备用方案
-    if [ "$total_asn_count" -eq 0 ]; then
-        local short_org=$(echo "$org_name" | awk '{print $1}' | cut -c1-8)
-        all_asn_data="$asn|$short_org|origin"
-        total_asn_count=1
-    fi
-
-    # 提取上游和同行数量
-    local upstreams_count=""
-    local peers_count=""
-    if [ -n "$as_page" ]; then
-        local connectivity_section=$(echo "$as_page" | sed -n '/<div.*id="connectivity-page"/,/<\/div>/p')
-        upstreams_count=$(echo "$connectivity_section" | grep -A 2 'Upstreams</a>' | grep -o '[0-9]\+' | head -1)
-        peers_count=$(echo "$connectivity_section" | grep -A 1 'Peers</a>' | grep -o '[0-9]\+' | head -1)
-    fi
-
-    # 保存结果
-    BGP_ASN_DATA="$all_asn_data"
-    BGP_TOTAL_COUNT="$total_asn_count"
-    BGP_PATHIMG_URL="$pathimg_url"
-    BGP_UPSTREAMS_COUNT="$upstreams_count"
-    BGP_PEERS_COUNT="$peers_count"
-    BGP_SUCCESS=true
-
-    # 显示BGP分析结果
-    echo ""
-    echo -e "${GREEN}─────────────────────────────────────────────────────────────────${NC}"
-    echo -e "                    ${GREEN}🌐 BGP对等体关系分析${NC} ${YELLOW}(基于bgp.tools)${NC}"
-    echo -e "${GREEN}─────────────────────────────────────────────────────────────────${NC}"
-
-    # 显示上游和同行数量
-    if [ -n "$upstreams_count" ] && [ -n "$peers_count" ]; then
-        echo -e "上游节点(Upstreams) :${YELLOW}$upstreams_count${NC} │ 对等节点(Peers):${YELLOW}$peers_count${NC}"
-        echo ""
-    fi
-
-    # 显示BGP网络拓扑
-    if [ -n "$all_asn_data" ] && [ "$total_asn_count" -gt 0 ]; then
-        local per_row=7
-        local total_rows=$(((total_asn_count + per_row - 1) / per_row))
-
-        for ((row=0; row<total_rows; row++)); do
-            local start_idx=$((row * per_row + 1))
-            local end_idx=$((start_idx + per_row - 1))
-            [ $end_idx -gt $total_asn_count ] && end_idx=$total_asn_count
-
-            # ASN行
-            for ((i=start_idx; i<=end_idx; i++)); do
-                local current_line=$(echo "$all_asn_data" | sed -n "${i}p")
-                local current_asn=$(echo "$current_line" | cut -d'|' -f1)
-                local current_color=$(echo "$current_line" | cut -d'|' -f3)
-
-                if [ $i -ne $start_idx ]; then
-                    printf "│"
-                fi
-
-                case "$current_color" in
-                    "origin") printf "${GREEN}%-12s${NC}" "AS$current_asn" ;;
-                    "tier1") printf "${BLUE}%-12s${NC}" "AS$current_asn" ;;
-                    "other") printf "${WHITE}%-12s${NC}" "AS$current_asn" ;;
-                    *) printf "${YELLOW}%-12s${NC}" "AS$current_asn" ;;
-                esac
-            done
-            echo ""
-
-            # 组织名称行
-            for ((i=start_idx; i<=end_idx; i++)); do
-                local current_line=$(echo "$all_asn_data" | sed -n "${i}p")
-                local current_name=$(echo "$current_line" | cut -d'|' -f2)
-                local current_color=$(echo "$current_line" | cut -d'|' -f3)
-
-                local display_name="$current_name"
-                if [ ${#display_name} -gt 12 ]; then
-                    display_name="${display_name:0:12}+"
-                fi
-
-                if [ $i -ne $start_idx ]; then
-                    printf "│"
-                fi
-
-                case "$current_color" in
-                    "origin") printf "${GREEN}%-12s${NC}" "$display_name" ;;
-                    "tier1") printf "${BLUE}%-12s${NC}" "$display_name" ;;
-                    "other") printf "${WHITE}%-12s${NC}" "$display_name" ;;
-                    *) printf "${YELLOW}%-12s${NC}" "$display_name" ;;
-                esac
-            done
-            echo ""
-
-            if [ $row -lt $((total_rows - 1)) ]; then
-                echo ""
-            fi
-        done
-    else
-        echo "暂无BGP连接数据"
-    fi
-
-    # 显示图片链接
-    if [ -n "$pathimg_url" ]; then
-        echo -e " ${BLUE}图片链接：${NC}${YELLOW}https://bgp.tools$pathimg_url${NC}"
-        echo -e "${GREEN}─────────────────────────────────────────────────────────────────${NC}"
-    fi
-
-    echo ""
-}
-
-# 生成BGP报告
-generate_bgp_report() {
-    # 检查分析结果
-    if [ "$BGP_SUCCESS" != true ]; then
-        echo -e "${WHITE}🌐 BGP对等体关系分析${NC} ${YELLOW}(基于bgp.tools)${NC}"
-        echo -e "─────────────────────────────────────────────────────────────────"
-        echo -e " ${RED}BGP分析失败或数据不可用${NC}"
-        echo -e "─────────────────────────────────────────────────────────────────"
-        return
-    fi
-
-    # 使用已保存的结果
-    local all_asn_data="$BGP_ASN_DATA"
-    local total_asn_count="$BGP_TOTAL_COUNT"
-    local pathimg_url="$BGP_PATHIMG_URL"
-    local upstreams_count="$BGP_UPSTREAMS_COUNT"
-    local peers_count="$BGP_PEERS_COUNT"
-
-    # 显示BGP分析结果
-    echo -e "${WHITE}🌐 BGP对等体关系分析${NC} ${YELLOW}(基于bgp.tools)${NC}"
-    echo -e "─────────────────────────────────────────────────────────────────"
-
-    # 显示上游和同行数量
-    if [ -n "$upstreams_count" ] && [ -n "$peers_count" ]; then
-        echo -e "上游节点(Upstreams) :${YELLOW}$upstreams_count${NC} │ 对等节点(Peers):${YELLOW}$peers_count${NC}"
-        echo ""
-    fi
-
-    # 显示BGP网络拓扑
-    if [ -n "$all_asn_data" ] && [ "$total_asn_count" -gt 0 ]; then
-        local per_row=7
-        local total_rows=$(((total_asn_count + per_row - 1) / per_row))
-
-        for ((row=0; row<total_rows; row++)); do
-            local start_idx=$((row * per_row + 1))
-            local end_idx=$((start_idx + per_row - 1))
-            [ $end_idx -gt $total_asn_count ] && end_idx=$total_asn_count
-
-            # ASN行
-            for ((i=start_idx; i<=end_idx; i++)); do
-                local current_line=$(echo "$all_asn_data" | sed -n "${i}p")
-                local current_asn=$(echo "$current_line" | cut -d'|' -f1)
-                local current_color=$(echo "$current_line" | cut -d'|' -f3)
-
-                if [ $i -ne $start_idx ]; then
-                    printf "│"
-                fi
-
-                case "$current_color" in
-                    "origin") printf "${GREEN}%-12s${NC}" "AS$current_asn" ;;
-                    "tier1") printf "${BLUE}%-12s${NC}" "AS$current_asn" ;;
-                    "other") printf "${WHITE}%-12s${NC}" "AS$current_asn" ;;
-                    *) printf "${YELLOW}%-12s${NC}" "AS$current_asn" ;;
-                esac
-            done
-            echo ""
-
-            # 组织名称行
-            for ((i=start_idx; i<=end_idx; i++)); do
-                local current_line=$(echo "$all_asn_data" | sed -n "${i}p")
-                local current_name=$(echo "$current_line" | cut -d'|' -f2)
-                local current_color=$(echo "$current_line" | cut -d'|' -f3)
-
-                local display_name="$current_name"
-                if [ ${#display_name} -gt 12 ]; then
-                    display_name="${display_name:0:12}+"
-                fi
-
-                if [ $i -ne $start_idx ]; then
-                    printf "│"
-                fi
-
-                case "$current_color" in
-                    "origin") printf "${GREEN}%-12s${NC}" "$display_name" ;;
-                    "tier1") printf "${BLUE}%-12s${NC}" "$display_name" ;;
-                    "other") printf "${WHITE}%-12s${NC}" "$display_name" ;;
-                    *) printf "${YELLOW}%-12s${NC}" "$display_name" ;;
-                esac
-            done
-            echo ""
-
-            if [ $row -lt $((total_rows - 1)) ]; then
-                echo ""
-            fi
-        done
-    else
-        echo "暂无BGP连接数据"
-    fi
-
-    echo -e "─────────────────────────────────────────────────────────────────"
-
-    # 显示图片链接
-    if [ -n "$pathimg_url" ]; then
-        echo -e " ${BLUE}图片链接：${NC}${YELLOW}https://bgp.tools$pathimg_url${NC}"
-        echo -e "─────────────────────────────────────────────────────────────────"
-    fi
-}
 
 # 全局测试结果变量
 HPING_SUCCESS=false
@@ -1952,15 +1231,6 @@ TCP_DOWNLOAD_SUCCESS=false
 TCP_SUCCESS=false
 UDP_SINGLE_SUCCESS=false
 UDP_DOWNLOAD_SUCCESS=false
-ROUTE_SUCCESS=false
-BGP_SUCCESS=false
-
-# BGP分析结果变量
-BGP_ASN_DATA=""
-BGP_TOTAL_COUNT=0
-BGP_PATHIMG_URL=""
-BGP_UPSTREAMS_COUNT=""
-BGP_PEERS_COUNT=""
 
 
 # 主要性能测试函数
@@ -1977,15 +1247,10 @@ run_performance_tests() {
     TCP_SUCCESS=false
     UDP_SINGLE_SUCCESS=false
     UDP_DOWNLOAD_SUCCESS=false
-    ROUTE_SUCCESS=false
-    BGP_SUCCESS=false
-
 
     # 执行各项测试
     run_latency_tests
     run_bandwidth_tests
-    run_route_analysis
-    run_bgp_analysis
 
     # 设置TCP总体成功状态
     if [ "$TCP_SINGLE_SUCCESS" = true ] || [ "$TCP_DOWNLOAD_SUCCESS" = true ]; then
@@ -2028,23 +1293,6 @@ generate_final_report() {
     echo -e "  TCP接收缓冲区（rmem）：${YELLOW}${rmem_info}${NC}"
     echo -e "  TCP发送缓冲区（wmem）：${YELLOW}${wmem_info}${NC}"
     echo ""
-
-    # 路由分析结果
-    echo -e "${WHITE}🧭 TCP大包路由路径分析（基于nexttrace）${NC}"
-    echo -e "─────────────────────────────────────────────────────────────────"
-
-    if [ "$ROUTE_SUCCESS" = true ]; then
-        [ -n "${TEST_RESULTS[route_as_path]}" ] && echo -e " AS路径: ${YELLOW}${TEST_RESULTS[route_as_path]}${NC}"
-        [ -n "${TEST_RESULTS[route_isp_path]}" ] && echo -e " 运营商: ${YELLOW}${TEST_RESULTS[route_isp_path]}${NC}"
-        [ -n "${TEST_RESULTS[route_geo_path]}" ] && echo -e " 地理路径: ${YELLOW}${TEST_RESULTS[route_geo_path]}${NC}"
-        [ -n "${TEST_RESULTS[route_map_url]}" ] && echo -e " ${BLUE}地图链接: ${TEST_RESULTS[route_map_url]}${NC}"
-    else
-        echo -e " ${RED}路由分析失败或数据不可用${NC}"
-    fi
-    echo -e "─────────────────────────────────────────────────────────────────"
-
-    # BGP对等体关系分析结果
-    generate_bgp_report
 
     # 核心性能数据展示
     echo -e "${WHITE}⚡ 网络链路参数分析（基于hping3 & iperf3）${NC}"
@@ -2125,10 +1373,11 @@ relay_server_mode() {
 
     # 输入服务端IP (目标服务器)
     while true; do
-        read -p "服务端IP (目标服务器): " TARGET_IP
+        read -p "服务端IP (目标服务器) [默认127.0.0.1]: " TARGET_IP
 
         if [ -z "$TARGET_IP" ]; then
-            echo -e "${RED}请输入服务端的IP地址${NC}"
+            TARGET_IP="127.0.0.1"
+            break
         elif validate_ip "$TARGET_IP"; then
             break
         else
@@ -2217,17 +1466,13 @@ uninstall_speedtest() {
         echo -e "${YELLOW}停止测试服务...${NC}"
         pkill -f "iperf3.*-s" 2>/dev/null || true
 
-        # 删除nexttrace工具
+        # 删除脚本相关工具
         echo -e "${BLUE}删除脚本相关工具...${NC}"
-        if [ -f "/usr/local/bin/nexttrace" ]; then
-            rm -f "/usr/local/bin/nexttrace"
-            echo -e "${GREEN}✅ 删除脚本相关工具完成${NC}"
-        fi
+        echo -e "${GREEN}✅ 删除脚本相关工具完成${NC}"
 
         # 清理临时文件
         echo -e "${BLUE}清理临时文件...${NC}"
         rm -f /tmp/speedtest_* 2>/dev/null || true
-        rm -f /tmp/isp_list_* /tmp/geo_list_* 2>/dev/null || true
 
         # 删除脚本文件
         echo -e "${BLUE}删除脚本文件...${NC}"
