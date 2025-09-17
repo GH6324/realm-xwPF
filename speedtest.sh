@@ -203,13 +203,6 @@ install_apt_tool() {
     fi
 }
 
-# 安装自定义工具
-install_custom_tool() {
-    local tool="$1"
-    echo -e "${RED}✗ 未知的自定义工具: $tool${NC}"
-    return 1
-}
-
 
 # 安装缺失的工具
 install_missing_tools() {
@@ -234,11 +227,6 @@ install_missing_tools() {
         case "$install_type" in
             "apt")
                 if ! install_apt_tool "$tool" "$package_name"; then
-                    install_failed=true
-                fi
-                ;;
-            "custom")
-                if ! install_custom_tool "$tool"; then
                     install_failed=true
                 fi
                 ;;
