@@ -9,18 +9,6 @@ telegram_is_enabled() {
     [ "$enabled" = "true" ]
 }
 
-# Telegram 快照通知（调用主脚本函数）
-telegram_send_snapshot() {
-    local message=$(format_snapshot_message)
-    if send_telegram_message "$message"; then
-        log_notification "Telegram快照通知发送成功"
-        return 0
-    else
-        log_notification "Telegram快照通知发送失败"
-        return 1
-    fi
-}
-
 # Telegram 状态通知（调用主脚本函数）
 telegram_send_status() {
     local message=$(format_status_message)
@@ -45,13 +33,6 @@ telegram_test() {
     fi
 
     echo "正在发送测试消息..."
-
-    # 发送快照通知
-    if telegram_send_snapshot; then
-        echo -e "${GREEN}快照通知发送成功！${NC}"
-    else
-        echo -e "${RED}快照通知发送失败${NC}"
-    fi
 
     # 发送状态通知
     if telegram_send_status; then
@@ -82,7 +63,6 @@ telegram_configure() {
             interval_display="每${status_interval}"
         fi
         echo -e "当前状态: ${config_status} | 状态通知: ${interval_display}"
-        echo "快照通知: 每日23点55分推送"
         echo
         echo "1. 配置Bot信息 (Token + Chat ID + 服务器名称)"
         echo "2. 通知设置管理"
@@ -171,7 +151,6 @@ telegram_configure_bot() {
         .notifications.telegram.chat_id = \"$chat_id\" |
         .notifications.telegram.server_name = \"$server_name\" |
         .notifications.telegram.enabled = true |
-        .notifications.telegram.snapshot_notifications.enabled = true |
         .notifications.telegram.status_notifications.enabled = true"
 
     echo -e "${GREEN}基本配置保存成功！${NC}"
@@ -208,12 +187,6 @@ telegram_configure_bot() {
     echo "正在发送测试通知..."
 
     # 发送测试通知
-    if telegram_send_snapshot; then
-        echo -e "${GREEN}快照通知发送成功！${NC}"
-    else
-        echo -e "${RED}快照通知发送失败${NC}"
-    fi
-
     if telegram_send_status; then
         echo -e "${GREEN}状态通知发送成功！${NC}"
     else
@@ -227,73 +200,19 @@ telegram_configure_bot() {
 telegram_manage_settings() {
     while true; do
         echo -e "${BLUE}=== 通知设置管理 ===${NC}"
-        echo "1. 开启/关闭"
-        echo "2. 状态通知间隔"
+        echo "1. 状态通知间隔"
         echo "0. 返回上级菜单"
         echo
-        read -p "请选择操作 [0-2]: " choice
+        read -p "请选择操作 [0-1]: " choice
 
         case $choice in
-            1) telegram_toggle_status ;;
-            2) telegram_configure_interval ;;
+            1) telegram_configure_interval ;;
             0) return 0 ;;
             *) echo -e "${RED}无效选择${NC}"; sleep 1 ;;
         esac
     done
 }
 
-# 开启/关闭通知
-telegram_toggle_status() {
-    echo -e "${BLUE}=== 切换状态 ===${NC}"
-    echo "1. 快照通知"
-    echo "2. 状态通知"
-    echo "0. 返回上级菜单"
-    echo
-    read -p "请选择要切换的通知类型 [0-2]: " choice
-
-    case $choice in
-        1) telegram_toggle_snapshot ;;
-        2) telegram_toggle_status_notification ;;
-        0) telegram_manage_settings ;;
-        *) echo -e "${RED}无效选择${NC}"; sleep 1; telegram_toggle_status ;;
-    esac
-}
-
-# 切换快照通知
-telegram_toggle_snapshot() {
-    local current_enabled=$(jq -r '.notifications.telegram.snapshot_notifications.enabled // false' "$CONFIG_FILE")
-
-    if [ "$current_enabled" = "true" ]; then
-        update_config '.notifications.telegram.snapshot_notifications.enabled = false'
-        echo -e "${GREEN}快照通知已关闭${NC}"
-    else
-        update_config '.notifications.telegram.snapshot_notifications.enabled = true'
-        echo -e "${GREEN}快照通知已开启${NC}"
-    fi
-
-    # 更新定时任务
-    setup_notification_cron
-
-    sleep 2
-}
-
-# 切换状态通知
-telegram_toggle_status_notification() {
-    local current_enabled=$(jq -r '.notifications.telegram.status_notifications.enabled // false' "$CONFIG_FILE")
-
-    if [ "$current_enabled" = "true" ]; then
-        update_config '.notifications.telegram.status_notifications.enabled = false'
-        echo -e "${GREEN}状态通知已关闭${NC}"
-    else
-        update_config '.notifications.telegram.status_notifications.enabled = true'
-        echo -e "${GREEN}状态通知已开启${NC}"
-    fi
-
-    # 更新定时任务
-    setup_notification_cron
-
-    sleep 2
-}
 
 # 配置状态通知间隔
 telegram_configure_interval() {
