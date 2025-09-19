@@ -760,7 +760,7 @@ show_main_menu() {
     # 菜单选项
     echo -e "${BLUE}1.${NC} 添加/删除端口监控     ${BLUE}2.${NC} 端口限制设置管理"
     echo -e "${BLUE}3.${NC} 流量重置管理          ${BLUE}4.${NC} 一键导出/导入配置"
-    echo -e "${BLUE}5.${NC} 安装依赖(更新)脚本   ${BLUE}6.${NC} 卸载脚本"
+    echo -e "${BLUE}5.${NC} 安装依赖(更新)脚本    ${BLUE}6.${NC} 卸载脚本"
     echo -e "${BLUE}7.${NC} 通知管理"
     echo -e "${BLUE}0.${NC} 退出"
     echo
@@ -2553,22 +2553,37 @@ send_telegram_message() {
     # 基础URL编码
     local encoded_message=$(printf '%s' "$message" | sed 's/ /%20/g; s/\n/%0A/g')
 
-    # 发送请求
-    local response=$(curl -s --max-time 10 -X POST \
-        "https://api.telegram.org/bot${bot_token}/sendMessage" \
-        -d "chat_id=${chat_id}" \
-        -d "text=${encoded_message}" \
-        -d "parse_mode=HTML" \
-        2>/dev/null)
+    # 重试2次
+    local max_retries=2
+    local retry_count=0
 
-    # 检查响应
-    if echo "$response" | grep -q '"ok":true'; then
-        log_notification "Telegram消息发送成功"
-        return 0
-    else
-        log_notification "Telegram消息发送失败"
-        return 1
-    fi
+    while [ $retry_count -le $max_retries ]; do
+        # 发送请求
+        local response=$(curl -s --connect-timeout 5 --max-time 15 -X POST \
+            "https://api.telegram.org/bot${bot_token}/sendMessage" \
+            -d "chat_id=${chat_id}" \
+            -d "text=${encoded_message}" \
+            -d "parse_mode=HTML" \
+            2>/dev/null)
+
+        # 检查响应
+        if echo "$response" | grep -q '"ok":true'; then
+            if [ $retry_count -gt 0 ]; then
+                log_notification "Telegram消息发送成功 (重试第${retry_count}次后成功)"
+            else
+                log_notification "Telegram消息发送成功"
+            fi
+            return 0
+        fi
+
+        retry_count=$((retry_count + 1))
+        if [ $retry_count -le $max_retries ]; then
+            sleep 2
+        fi
+    done
+
+    log_notification "Telegram消息发送失败 (已重试${max_retries}次)"
+    return 1
 }
 
 # 记录通知日志
