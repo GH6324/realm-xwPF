@@ -1,12 +1,12 @@
-# realm Full-Featured One-Click Network Forwarding Management, Three Scripts for Quick Relay Server Setup
+# realm Full-Featured One-Click Network Forwarding Management, Pure Script Quick Relay Server Setup
 
 [中文](README.md) | [English](README_EN.md) | [Port Traffic Dog Introduction](port-traffic-dog-README.md)
 
 ---
 
-> 🚀 **Network Forwarding Management Script** - Integrates all features of the latest official realm version, network link testing, port traffic dog, maintains extreme simplicity, visual rule operations to improve efficiency, pure script builds complete relay ecosystem
+> 🚀 **Network Forwarding Management Script** - Integrates all features of the latest official realm version, network link testing, port traffic dog, maintains extreme simplicity, visual rule operations to improve efficiency, pure script builds network forwarding service
 
-## 📸 Three Scripts Interface Preview 📸
+## Script Interface Preview
 
 <details>
 <summary>Click to view interface screenshots</summary>
@@ -88,7 +88,7 @@ Test completion time: 2025-08-28 20:12:29 | Script open source: https://github.c
 
 </details>
 
-## 🚀 Quick Start
+## Quick Start
 
 ### One-Click Installation
 
@@ -102,7 +102,7 @@ wget -qO- https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xwPF.sh | sud
 wget -qO- https://ghfast.top/https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xwPF.sh | sudo bash -s install
 ```
 
-## 🧭 Offline Installation for No Network Access
+## Offline Installation for No Network Access
 
 <details>
 <summary>Click to expand offline installation methods</summary>
@@ -127,23 +127,23 @@ Create any directory to place the script and compressed package files. When star
 
 ## ✨ Core Features
 
-- **🚀 Quick Experience** - One-click installation for quick lightweight hands-on experience with network forwarding
-- **🔄 Failover** - Uses system tools to achieve automatic failure detection while maintaining lightweight design
-- **⚖️ Load Balancing** - Supports round-robin, IP hash strategies with configurable weight distribution
-- **🕳️ Tunnel Building** - Dual-realm architecture supports TLS, ws encrypted transmission for tunnel construction
-- **✍️ Rule Comments** - Clear commenting functionality, no need for additional memorization
-- **🔔 Port Traffic Dog** - Statistics port traffic, control port speed limiting, flow control, configurable notification methods
-- **💻 Intuitive MPTCP System Configuration** - Clear MPTCP interface display
-- **🛜 Network Link Script** - Test link latency, bandwidth, stability, large packet routing (based on hping3 & iperf3 & nexttrace & bgp.tools)
+- **Quick Experience** - One-click installation for quick lightweight hands-on experience with network forwarding
+- **Failover** - Uses system tools to achieve automatic failure detection while maintaining lightweight design
+- **Load Balancing** - Supports round-robin, IP hash strategies with configurable weight distribution
+- **Tunnel Building** - Dual-realm architecture supports TLS, ws encrypted transmission for tunnel construction
+- **Rule Comments** - Clear commenting functionality, no need for additional memorization
+- **Port Traffic Dog** - Statistics port traffic, control port speed limiting, flow control, configurable notification methods
+- **Intuitive MPTCP System Configuration** - Clear MPTCP interface display
+- **Network Link Script** - Test link latency, bandwidth, stability, large packet routing (based on hping3 & iperf3 & nexttrace & bgp.tools)
 
-- **📋 One-Click Export** - Package all files into compressed archive for free migration (including comments and all information for complete migration)
-- **📒 One-Click Import** - Recognize exported compressed packages for complete free migration
-- **🖨️ One-click recognition and import** of custom Realm configuration files; scripts can be recognized and imported
-- **🔧 Smart detection** - Automatically detects system architecture, port conflicts, and connection availability
+- **One-Click Export** - Package all files into compressed archive for free migration (including comments and all information for complete migration)
+- **One-Click Import** - Recognize exported compressed packages for complete free migration
+- **One-click recognition and import** of custom Realm configuration files; scripts can be recognized and imported
+- **Smart detection** - Automatically detects system architecture, port conflicts, and connection availability
 
-- **📝 Intelligent Log Management** - Automatic log size limitation to prevent excessive disk usage
-- **🗑️ Complete Uninstallation** - Phased comprehensive cleanup, "I leave gently, just as I came gently"
-- **⚡ Full Native Realm Functionality** - Supports all native features of the latest realm version
+- **Intelligent Log Management** - Automatic log size limitation to prevent excessive disk usage
+- **Complete Uninstallation** - Phased comprehensive cleanup, "I leave gently, just as I came gently"
+- **Full Native Realm Functionality** - Supports all native features of the latest realm version
 - tcp/udp protocols
 - ws/wss/tls encryption
 - Single relay to multiple exits
@@ -153,7 +153,7 @@ Create any directory to place the script and compressed package files. When star
 - Specify a specific entry IP for the relay server and a specific exit IP (suitable for multi-IP situations and one-entry-multiple-exits and multiple-entries-one-exit scenarios)
 - More usage patterns refer to [zhboner/realm](https://github.com/zhboner/realm)
 
-## 🗺️ Diagrams to Understand Working Principles in Different Scenarios (Recommended Reading)
+## Diagrams to Understand Working Principles in Different Scenarios (Recommended Reading)
 
 <details>
 <summary><strong>Single-end realm architecture only responsible for forwarding (common)</strong></summary>
@@ -282,23 +282,23 @@ Divided into two proxy segments, hence also called segmented proxy, secondary pr
 ### Dependency Tools
 Principle: prioritize **Linux native lightweight tools**, keeping the system clean and lightweight
 
-| Tool | Purpose | Auto Install |
-|------|---------|--------------|
-| `curl` | Download and IP retrieval | ✅ |
-| `wget` | Backup download tool | ✅ |
-| `tar` | Compression/decompression tool | ✅ |
-| `unzip` | ZIP decompression | ✅ |
-| `systemctl` | Commander coordinating work | ✅ |
-| `bc` | Numerical calculations | ✅ |
-| `nc` | Network connection testing | ✅ |
-| `grep`/`cut` | Text processing and recognition | ✅ |
-| `inotify` | Marker files | ✅ |
-| `iproute2` | MPTCP endpoint management | ✅ |
-| `jq` | JSON data processing | ✅ |
-| `nftables` | Port traffic statistics | ✅ |
-| `tc` | Traffic control and limiting | ✅ |
+| Tool | Purpose |
+|------|---------|
+| `curl` | Download and IP retrieval |
+| `wget` | Backup download tool |
+| `tar` | Compression/decompression tool |
+| `unzip` | ZIP decompression |
+| `systemctl` | Commander coordinating work |
+| `bc` | Numerical calculations |
+| `nc` | Network connection testing |
+| `grep`/`cut` | Text processing and recognition |
+| `inotify` | Marker files |
+| `iproute2` | MPTCP endpoint management |
+| `jq` | JSON data processing |
+| `nftables` | Port traffic statistics |
+| `tc` | Traffic control and limiting |
 
-## 📁 File Structure
+## File Structure
 
 File organization structure after installation:
 
@@ -352,12 +352,6 @@ File organization structure after installation:
 - **Author Homepage:** [https://zywe.de](https://zywe.de)
 - **Issue Feedback:** [GitHub Issues](https://github.com/zywe03/realm-xwPF/issues)
 - **Casual Chat Group** [TG Chat Group](https://t.me/zywe_chat)
-
-## 🙏 Acknowledgments
-
-- [zhboner/realm](https://github.com/zhboner/realm) - Providing the core Realm program
-- "https://ghfast.top/""https://ghproxy.gpnu.org/""https://gh.222322.xyz/" - Providing public accelerated sources
-- All users who provided feedback and suggestions for the project
 
 ---
 
