@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-readonly SCRIPT_VERSION="1.2.1"
+readonly SCRIPT_VERSION="1.2.2"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -204,9 +204,14 @@ init_config() {
       "enabled": false,
       "status": "coming_soon"
     },
-    "wechat": {
+    "wecom": {
       "enabled": false,
-      "status": "coming_soon"
+      "webhook_url": "",
+      "server_name": "",
+      "status_notifications": {
+        "enabled": false,
+        "interval": "1h"
+      }
     }
   }
 }
@@ -804,13 +809,16 @@ format_port_list() {
 
         if [ "$format_type" = "display" ]; then
             echo -e "端口:${GREEN}$port${NC} | 总流量:${GREEN}$total_formatted${NC} | 上行(入站): ${GREEN}$input_formatted${NC} | 下行(出站):${GREEN}$output_formatted${NC} | ${YELLOW}$status_label${NC}"
+        elif [ "$format_type" = "markdown" ]; then
+            result+="> 端口:**${port}** | 总流量:**${total_formatted}** | 上行:**${input_formatted}** | 下行:**${output_formatted}** | ${status_label}
+"
         else
             result+="
 端口:${port} | 总流量:${total_formatted} | 上行(入站): ${input_formatted} | 下行(出站):${output_formatted} | ${status_label}"
         fi
     done
 
-    if [ "$format_type" = "message" ]; then
+    if [ "$format_type" = "message" ] || [ "$format_type" = "markdown" ]; then
         echo "$result"
     fi
 }
@@ -2318,7 +2326,7 @@ manage_notifications() {
     echo -e "${BLUE}=== 通知管理 ===${NC}"
     echo "1. Telegram机器人通知"
     echo "2. 邮箱通知 [敬请期待]"
-    echo "3. 企业wx通知 [敬请期待]"
+    echo "3. 企业wx 机器人通知"
     echo "0. 返回主菜单"
     echo
     read -p "请选择操作 [0-3]: " choice
@@ -2330,11 +2338,7 @@ manage_notifications() {
             sleep 2
             manage_notifications
             ;;
-        3)
-            echo -e "${YELLOW}预留的企业wx通知功能(画饼的)${NC}"
-            sleep 2
-            manage_notifications
-            ;;
+        3) manage_wecom_notifications ;;
         0) show_main_menu ;;
         *) echo -e "${RED}无效选择${NC}"; sleep 1; manage_notifications ;;
     esac
@@ -2355,28 +2359,57 @@ manage_telegram_notifications() {
     fi
 }
 
+manage_wecom_notifications() {
+    local wecom_script="$CONFIG_DIR/notifications/wecom.sh"
 
+    if [ -f "$wecom_script" ]; then
+        source "$wecom_script"
+        wecom_configure
+        manage_notifications
+    else
+        echo -e "${RED}企业wx 通知模块不存在${NC}"
+        echo "请检查文件: $wecom_script"
+        sleep 2
+        manage_notifications
+    fi
+}
 
 setup_notification_cron() {
     local script_path="$SCRIPT_PATH"
     local temp_cron=$(mktemp)
 
     # 保留现有任务，移除旧的通知任务
-    crontab -l 2>/dev/null | grep -v "# 端口流量狗状态通知" | grep -v "port-traffic-dog.*--send-status" > "$temp_cron" || true
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗通知" | grep -v "port-traffic-dog.*--send-.*-status" > "$temp_cron" || true
 
-    local status_enabled=$(jq -r '.notifications.telegram.status_notifications.enabled' "$CONFIG_FILE")
-
-    if [ "$status_enabled" = "true" ]; then
+    # 检查telegram通知是否启用
+    local telegram_enabled=$(jq -r '.notifications.telegram.status_notifications.enabled // false' "$CONFIG_FILE")
+    if [ "$telegram_enabled" = "true" ]; then
         local status_interval=$(jq -r '.notifications.telegram.status_notifications.interval' "$CONFIG_FILE")
         case "$status_interval" in
-            "1m")  echo "* * * * * $script_path --send-status >/dev/null 2>&1  # 端口流量狗状态通知" >> "$temp_cron" ;;
-            "15m") echo "*/15 * * * * $script_path --send-status >/dev/null 2>&1  # 端口流量狗状态通知" >> "$temp_cron" ;;
-            "30m") echo "*/30 * * * * $script_path --send-status >/dev/null 2>&1  # 端口流量狗状态通知" >> "$temp_cron" ;;
-            "1h")  echo "0 * * * * $script_path --send-status >/dev/null 2>&1  # 端口流量狗状态通知" >> "$temp_cron" ;;
-            "2h")  echo "0 */2 * * * $script_path --send-status >/dev/null 2>&1  # 端口流量狗状态通知" >> "$temp_cron" ;;
-            "6h")  echo "0 */6 * * * $script_path --send-status >/dev/null 2>&1  # 端口流量狗状态通知" >> "$temp_cron" ;;
-            "12h") echo "0 */12 * * * $script_path --send-status >/dev/null 2>&1  # 端口流量狗状态通知" >> "$temp_cron" ;;
-            "24h") echo "0 0 * * * $script_path --send-status >/dev/null 2>&1  # 端口流量狗状态通知" >> "$temp_cron" ;;
+            "1m")  echo "* * * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
+            "15m") echo "*/15 * * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
+            "30m") echo "*/30 * * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
+            "1h")  echo "0 * * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
+            "2h")  echo "0 */2 * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
+            "6h")  echo "0 */6 * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
+            "12h") echo "0 */12 * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
+            "24h") echo "0 0 * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
+        esac
+    fi
+
+    # 检查企业wx 通知是否启用
+    local wecom_enabled=$(jq -r '.notifications.wecom.status_notifications.enabled // false' "$CONFIG_FILE")
+    if [ "$wecom_enabled" = "true" ]; then
+        local wecom_interval=$(jq -r '.notifications.wecom.status_notifications.interval' "$CONFIG_FILE")
+        case "$wecom_interval" in
+            "1m")  echo "* * * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
+            "15m") echo "*/15 * * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
+            "30m") echo "*/30 * * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
+            "1h")  echo "0 * * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
+            "2h")  echo "0 */2 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
+            "6h")  echo "0 */6 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
+            "12h") echo "0 */12 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
+            "24h") echo "0 0 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
         esac
     fi
 
@@ -2384,6 +2417,31 @@ setup_notification_cron() {
     rm -f "$temp_cron"
 
     echo -e "${GREEN}定时任务已更新${NC}"
+}
+
+# 通用间隔选择函数
+select_notification_interval() {
+    # 显示选择菜单到stderr，避免被变量捕获
+    echo "请选择状态通知发送间隔:" >&2
+    echo "1. 1分钟   2. 15分钟  3. 30分钟  4. 1小时" >&2
+    echo "5. 2小时   6. 6小时   7. 12小时  8. 24小时" >&2
+    read -p "请选择(回车默认1小时) [1-8]: " interval_choice >&2
+
+    # 默认1小时
+    local interval="1h"
+    case $interval_choice in
+        1) interval="1m" ;;
+        2) interval="15m" ;;
+        3) interval="30m" ;;
+        4|"") interval="1h" ;;
+        5) interval="2h" ;;
+        6) interval="6h" ;;
+        7) interval="12h" ;;
+        8) interval="24h" ;;
+        *) interval="1h" ;;
+    esac
+
+    echo "$interval"
 }
 
 remove_notification_cron() {
@@ -2427,10 +2485,10 @@ remove_port_auto_reset_cron() {
     rm -f "$temp_cron"
 }
 
-# 格式化状态消息
+# 格式化状态消息（HTML格式）
 format_status_message() {
+    local server_name="${1:-$(hostname)}"  # 接受服务器名称参数
     local timestamp=$(get_beijing_time '+%Y-%m-%d %H:%M:%S')
-    local server_name=$(jq -r '.notifications.telegram.server_name // ""' "$CONFIG_FILE" 2>/dev/null || echo "$(hostname)")
     local notification_icon="🔔"
     local active_ports=($(get_active_ports))
     local port_count=${#active_ports[@]}
@@ -2447,6 +2505,54 @@ format_status_message() {
 <pre>$(format_port_list "message")</pre>
 ────────────────────────────────────────
 🔗 服务器: <i>${server_name}</i>"
+
+    echo "$message"
+}
+
+# 格式化状态消息（纯文本text格式）
+format_text_status_message() {
+    local server_name="${1:-$(hostname)}"
+    local timestamp=$(get_beijing_time '+%Y-%m-%d %H:%M:%S')
+    local notification_icon="🔔"
+    local active_ports=($(get_active_ports))
+    local port_count=${#active_ports[@]}
+    local daily_total=$(get_daily_total_traffic)
+
+    local message="${notification_icon} 端口流量狗 v${SCRIPT_VERSION}
+⏰ ${timestamp}
+作者主页: https://zywe.de
+项目开源: https://github.com/zywe03/realm-xwPF
+一只轻巧的'守护犬'，时刻守护你的端口流量 | 快捷命令: dog
+
+状态: 监控中 | 守护端口: ${port_count}个 | 端口总流量: ${daily_total}
+────────────────────────────────────────
+$(format_port_list "message")
+────────────────────────────────────────
+🔗 服务器: ${server_name}"
+
+    echo "$message"
+}
+
+# 格式化状态消息（Markdown格式）
+format_markdown_status_message() {
+    local server_name="${1:-$(hostname)}"
+    local timestamp=$(get_beijing_time '+%Y-%m-%d %H:%M:%S')
+    local notification_icon="🔔"
+    local active_ports=($(get_active_ports))
+    local port_count=${#active_ports[@]}
+    local daily_total=$(get_daily_total_traffic)
+
+    local message="**${notification_icon} 端口流量狗 v${SCRIPT_VERSION}**
+⏰ ${timestamp}
+作者主页: \`https://zywe.de\`
+项目开源: \`https://github.com/zywe03/realm-xwPF\`
+一只轻巧的'守护犬'，时刻守护你的端口流量 | 快捷命令: dog
+
+**状态**: 监控中 | **守护端口**: ${port_count}个 | **端口总流量**: ${daily_total}
+────────────────────────────────────────
+$(format_port_list "markdown")
+────────────────────────────────────────
+🔗 **服务器**: ${server_name}"
 
     echo "$message"
 }
@@ -2470,19 +2576,38 @@ log_notification() {
 
 # 通用状态通知发送函数
 send_status_notification() {
+    local success_count=0
+    local total_count=0
+
+    # 发送Telegram通知
     local telegram_script="$CONFIG_DIR/notifications/telegram.sh"
     if [ -f "$telegram_script" ]; then
         source "$telegram_script"
+        total_count=$((total_count + 1))
         if telegram_send_status_notification; then
-            echo -e "${GREEN}状态通知发送成功${NC}"
-            return 0
-        else
-            echo -e "${RED}状态通知发送失败${NC}"
-            return 1
+            success_count=$((success_count + 1))
         fi
-    else
+    fi
+
+    # 发送企业wx 通知
+    local wecom_script="$CONFIG_DIR/notifications/wecom.sh"
+    if [ -f "$wecom_script" ]; then
+        source "$wecom_script"
+        total_count=$((total_count + 1))
+        if wecom_send_status_notification; then
+            success_count=$((success_count + 1))
+        fi
+    fi
+
+    if [ $total_count -eq 0 ]; then
         log_notification "通知模块不存在"
         echo -e "${RED}通知模块不存在${NC}"
+        return 1
+    elif [ $success_count -gt 0 ]; then
+        echo -e "${GREEN}状态通知发送成功 ($success_count/$total_count)${NC}"
+        return 0
+    else
+        echo -e "${RED}状态通知发送失败${NC}"
         return 1
     fi
 }
@@ -2518,6 +2643,22 @@ main() {
                 send_status_notification
                 exit 0
                 ;;
+            --send-telegram-status)
+                local telegram_script="$CONFIG_DIR/notifications/telegram.sh"
+                if [ -f "$telegram_script" ]; then
+                    source "$telegram_script"
+                    telegram_send_status_notification
+                fi
+                exit 0
+                ;;
+            --send-wecom-status)
+                local wecom_script="$CONFIG_DIR/notifications/wecom.sh"
+                if [ -f "$wecom_script" ]; then
+                    source "$wecom_script"
+                    wecom_send_status_notification
+                fi
+                exit 0
+                ;;
             --reset-port)
                 if [ $# -lt 2 ]; then
                     echo -e "${RED}错误：--reset-port 需要指定端口号${NC}"
@@ -2533,7 +2674,9 @@ main() {
                 echo "  --version                 显示版本信息"
                 echo "  --install                 安装/更新脚本"
                 echo "  --uninstall               卸载脚本"
-                echo "  --send-status             发送Telegram状态通知"
+                echo "  --send-status             发送所有启用的状态通知"
+                echo "  --send-telegram-status    发送Telegram状态通知"
+                echo "  --send-wecom-status       发送企业wx 状态通知"
                 echo "  --reset-port PORT         重置指定端口流量"
                 echo
                 echo -e "${GREEN}快捷命令: $SHORTCUT_COMMAND${NC}"

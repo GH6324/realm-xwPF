@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Telegram通知模块：实现完整的Telegram Bot消息发送和配置管理
+# Telegram通知模块
 
 # 网络参数：防止重复source时的readonly冲突
 if [[ -z "${TELEGRAM_MAX_RETRIES:-}" ]]; then
@@ -30,7 +30,7 @@ send_telegram_message() {
 
     local retry_count=0
 
-    # 重试机制：网络不稳定时确保消息送达
+    # 重试机制
     while [ $retry_count -le $TELEGRAM_MAX_RETRIES ]; do
         local response=$(curl -s --connect-timeout $TELEGRAM_CONNECT_TIMEOUT --max-time $TELEGRAM_MAX_TIMEOUT -X POST \
             "https://api.telegram.org/bot${bot_token}/sendMessage" \
@@ -61,13 +61,15 @@ send_telegram_message() {
 
 # 标准通知接口：主脚本通过此函数调用Telegram通知
 telegram_send_status_notification() {
-    if ! telegram_is_enabled; then
-        log_notification "Telegram通知未启用"
+    local status_enabled=$(jq -r '.notifications.telegram.status_notifications.enabled // false' "$CONFIG_FILE")
+    if [ "$status_enabled" != "true" ]; then
+        log_notification "Telegram状态通知未启用"
         return 1
     fi
 
-    # 依赖主脚本提供统一的消息格式化
-    local message=$(format_status_message)
+    # 使用HTML格式消息
+    local server_name=$(jq -r '.notifications.telegram.server_name // ""' "$CONFIG_FILE" 2>/dev/null || echo "$(hostname)")
+    local message=$(format_status_message "$server_name")
     if send_telegram_message "$message"; then
         log_notification "Telegram状态通知发送成功"
         return 0
@@ -80,32 +82,6 @@ telegram_send_status_notification() {
 # 向后兼容
 telegram_send_status() {
     telegram_send_status_notification
-}
-
-# 间隔选择：提取重复逻辑，统一用户体验
-select_notification_interval() {
-    # 显示选择菜单到stderr，避免被变量捕获
-    echo "请选择状态通知发送间隔:" >&2
-    echo "1. 1分钟   2. 15分钟  3. 30分钟  4. 1小时" >&2
-    echo "5. 2小时   6. 6小时   7. 12小时  8. 24小时" >&2
-    read -p "请选择(回车默认1小时) [1-8]: " interval_choice >&2
-
-    # 默认1小时：平衡通知频率和用户体验
-    local interval="1h"
-    case $interval_choice in
-        1) interval="1m" ;;
-        2) interval="15m" ;;
-        3) interval="30m" ;;
-        4|"") interval="1h" ;;
-        5) interval="2h" ;;
-        6) interval="6h" ;;
-        7) interval="12h" ;;
-        8) interval="24h" ;;
-        *) interval="1h" ;;  # 无效输入时的安全回退
-    esac
-
-    # 只有返回值输出到stdout
-    echo "$interval"
 }
 
 telegram_test() {
@@ -132,11 +108,19 @@ telegram_test() {
 
 telegram_configure() {
     while true; do
-        local telegram_enabled=$(jq -r '.notifications.telegram.enabled // false' "$CONFIG_FILE")
+        local status_notifications_enabled=$(jq -r '.notifications.telegram.status_notifications.enabled // false' "$CONFIG_FILE")
+        local bot_token=$(jq -r '.notifications.telegram.bot_token // ""' "$CONFIG_FILE")
 
-        local config_status="❌未配置"
-        if [ "$telegram_enabled" = "true" ]; then
-            config_status="✅已配置"
+        # 判断配置状态
+        local config_status="[未配置]"
+        if [ -n "$bot_token" ] && [ "$bot_token" != "" ] && [ "$bot_token" != "null" ]; then
+            config_status="[已配置]"
+        fi
+
+        # 判断开关状态
+        local enable_status="[关闭]"
+        if [ "$status_notifications_enabled" = "true" ]; then
+            enable_status="[开启]"
         fi
 
         local status_interval=$(jq -r '.notifications.telegram.status_notifications.interval' "$CONFIG_FILE")
@@ -146,7 +130,7 @@ telegram_configure() {
         if [ -n "$status_interval" ] && [ "$status_interval" != "null" ]; then
             interval_display="每${status_interval}"
         fi
-        echo -e "当前状态: ${config_status} | 状态通知: ${interval_display}"
+        echo -e "当前状态: ${enable_status} | ${config_status} | 状态通知: ${interval_display}"
         echo
         echo "1. 配置Bot信息 (Token + Chat ID + 服务器名称)"
         echo "2. 通知设置管理"
@@ -266,12 +250,14 @@ telegram_manage_settings() {
     while true; do
         echo -e "${BLUE}=== 通知设置管理 ===${NC}"
         echo "1. 状态通知间隔"
+        echo "2. 开启/关闭切换"
         echo "0. 返回上级菜单"
         echo
-        read -p "请选择操作 [0-1]: " choice
+        read -p "请选择操作 [0-2]: " choice
 
         case $choice in
             1) telegram_configure_interval ;;
+            2) telegram_toggle_status_notifications ;;
             0) return 0 ;;
             *) echo -e "${RED}无效选择${NC}"; sleep 1 ;;
         esac
@@ -295,6 +281,21 @@ telegram_configure_interval() {
 
     setup_notification_cron
 
+    sleep 2
+}
+
+telegram_toggle_status_notifications() {
+    local current_status=$(jq -r '.notifications.telegram.status_notifications.enabled // false' "$CONFIG_FILE")
+
+    if [ "$current_status" = "true" ]; then
+        update_config ".notifications.telegram.status_notifications.enabled = false"
+        echo -e "${GREEN}状态通知已关闭${NC}"
+    else
+        update_config ".notifications.telegram.status_notifications.enabled = true"
+        echo -e "${GREEN}状态通知已开启${NC}"
+    fi
+
+    setup_notification_cron
     sleep 2
 }
 
