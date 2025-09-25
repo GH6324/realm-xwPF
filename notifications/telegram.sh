@@ -2,10 +2,12 @@
 
 # Telegram通知模块：实现完整的Telegram Bot消息发送和配置管理
 
-# 网络超时等参数
-readonly TELEGRAM_MAX_RETRIES=2
-readonly TELEGRAM_CONNECT_TIMEOUT=5
-readonly TELEGRAM_MAX_TIMEOUT=15
+# 网络参数：防止重复source时的readonly冲突
+if [[ -z "${TELEGRAM_MAX_RETRIES:-}" ]]; then
+    readonly TELEGRAM_MAX_RETRIES=2
+    readonly TELEGRAM_CONNECT_TIMEOUT=5
+    readonly TELEGRAM_MAX_TIMEOUT=15
+fi
 
 telegram_is_enabled() {
     local enabled=$(jq -r '.notifications.telegram.enabled // false' "$CONFIG_FILE")
@@ -82,10 +84,11 @@ telegram_send_status() {
 
 # 间隔选择：提取重复逻辑，统一用户体验
 select_notification_interval() {
-    echo "请选择状态通知发送间隔:"
-    echo "1. 1分钟   2. 15分钟  3. 30分钟  4. 1小时"
-    echo "5. 2小时   6. 6小时   7. 12小时  8. 24小时"
-    read -p "请选择(回车默认1小时) [1-8]: " interval_choice
+    # 显示选择菜单到stderr，避免被变量捕获
+    echo "请选择状态通知发送间隔:" >&2
+    echo "1. 1分钟   2. 15分钟  3. 30分钟  4. 1小时" >&2
+    echo "5. 2小时   6. 6小时   7. 12小时  8. 24小时" >&2
+    read -p "请选择(回车默认1小时) [1-8]: " interval_choice >&2
 
     # 默认1小时：平衡通知频率和用户体验
     local interval="1h"
@@ -101,6 +104,7 @@ select_notification_interval() {
         *) interval="1h" ;;  # 无效输入时的安全回退
     esac
 
+    # 只有返回值输出到stdout
     echo "$interval"
 }
 

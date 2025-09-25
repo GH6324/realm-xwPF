@@ -2450,6 +2450,23 @@ format_status_message() {
     echo "$message"
 }
 
+# 记录通知日志
+log_notification() {
+    local message="$1"
+    local timestamp=$(get_beijing_time '+%Y-%m-%d %H:%M:%S')
+    local log_file="$CONFIG_DIR/logs/notification.log"
+
+    mkdir -p "$(dirname "$log_file")"
+
+    echo "[$timestamp] $message" >> "$log_file"
+
+    # 日志轮转：防止日志文件过大
+    if [ -f "$log_file" ] && [ $(wc -l < "$log_file") -gt 1000 ]; then
+        tail -n 500 "$log_file" > "${log_file}.tmp"
+        mv "${log_file}.tmp" "$log_file"
+    fi
+}
+
 # 通用状态通知发送函数
 send_status_notification() {
     local telegram_script="$CONFIG_DIR/notifications/telegram.sh"
@@ -2466,22 +2483,6 @@ send_status_notification() {
         log_notification "通知模块不存在"
         echo -e "${RED}通知模块不存在${NC}"
         return 1
-    fi
-}
-
-# 记录通知日志
-log_notification() {
-    local message="$1"
-    local timestamp=$(get_beijing_time '+%Y-%m-%d %H:%M:%S')
-    local log_file="$CONFIG_DIR/logs/notification.log"
-
-    mkdir -p "$(dirname "$log_file")"
-
-    echo "[$timestamp] $message" >> "$log_file"
-
-    # 日志轮转：保留最近100行
-    if [ -f "$log_file" ] && [ $(wc -l < "$log_file") -gt 100 ]; then
-        tail -n 100 "$log_file" > "${log_file}.tmp" && mv "${log_file}.tmp" "$log_file"
     fi
 }
 
