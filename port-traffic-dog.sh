@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-readonly SCRIPT_VERSION="1.2.0"
+readonly SCRIPT_VERSION="1.2.1"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -195,12 +195,9 @@ init_config() {
       "bot_token": "",
       "chat_id": "",
       "server_name": "",
-      "api_timeout": 10,
-      "retry_count": 3,
       "status_notifications": {
         "enabled": false,
-        "interval": "1h",
-        "last_sent": null
+        "interval": "1h"
       }
     },
     "email": {
@@ -2429,8 +2426,6 @@ remove_port_auto_reset_cron() {
     rm -f "$temp_cron"
 }
 
-
-
 # 格式化状态消息
 format_status_message() {
     local timestamp=$(get_beijing_time '+%Y-%m-%d %H:%M:%S')
@@ -2455,54 +2450,23 @@ format_status_message() {
     echo "$message"
 }
 
-# 发送Telegram消息
-send_telegram_message() {
-    local message="$1"
-
-    local bot_token=$(jq -r '.notifications.telegram.bot_token // ""' "$CONFIG_FILE" 2>/dev/null || echo "")
-    local chat_id=$(jq -r '.notifications.telegram.chat_id // ""' "$CONFIG_FILE" 2>/dev/null || echo "")
-
-    local enabled=$(jq -r '.notifications.telegram.enabled // false' "$CONFIG_FILE")
-    if [ "$enabled" != "true" ]; then
-        log_notification "Telegram通知未启用"
-        return 1
-    fi
-
-    if [ -z "$bot_token" ] || [ -z "$chat_id" ]; then
-        log_notification "Telegram配置不完整"
-        return 1
-    fi
-
-    local encoded_message=$(printf '%s' "$message" | sed 's/ /%20/g; s/\n/%0A/g')
-
-    local max_retries=2
-    local retry_count=0
-
-    while [ $retry_count -le $max_retries ]; do
-        local response=$(curl -s --connect-timeout 5 --max-time 15 -X POST \
-            "https://api.telegram.org/bot${bot_token}/sendMessage" \
-            -d "chat_id=${chat_id}" \
-            -d "text=${encoded_message}" \
-            -d "parse_mode=HTML" \
-            2>/dev/null)
-
-        if echo "$response" | grep -q '"ok":true'; then
-            if [ $retry_count -gt 0 ]; then
-                log_notification "Telegram消息发送成功 (重试第${retry_count}次后成功)"
-            else
-                log_notification "Telegram消息发送成功"
-            fi
+# 通用状态通知发送函数
+send_status_notification() {
+    local telegram_script="$CONFIG_DIR/notifications/telegram.sh"
+    if [ -f "$telegram_script" ]; then
+        source "$telegram_script"
+        if telegram_send_status_notification; then
+            echo -e "${GREEN}状态通知发送成功${NC}"
             return 0
+        else
+            echo -e "${RED}状态通知发送失败${NC}"
+            return 1
         fi
-
-        retry_count=$((retry_count + 1))
-        if [ $retry_count -le $max_retries ]; then
-            sleep 2
-        fi
-    done
-
-    log_notification "Telegram消息发送失败 (已重试${max_retries}次)"
-    return 1
+    else
+        log_notification "通知模块不存在"
+        echo -e "${RED}通知模块不存在${NC}"
+        return 1
+    fi
 }
 
 # 记录通知日志
@@ -2549,18 +2513,7 @@ main() {
                 exit 0
                 ;;
             --send-status)
-                local telegram_script="$CONFIG_DIR/notifications/telegram.sh"
-                if [ -f "$telegram_script" ]; then
-                    source "$telegram_script"
-                    if telegram_send_status; then
-                        echo -e "${GREEN}状态通知发送成功${NC}"
-                    else
-                        echo -e "${RED}状态通知发送失败${NC}"
-                    fi
-                else
-                    log_notification "Telegram通知模块不存在"
-                    echo -e "${RED}Telegram通知模块不存在${NC}"
-                fi
+                send_status_notification
                 exit 0
                 ;;
             --reset-port)
