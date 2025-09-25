@@ -2448,7 +2448,7 @@ remove_notification_cron() {
     local temp_cron=$(mktemp)
 
     # 保留现有任务，移除通知任务
-    crontab -l 2>/dev/null | grep -v "# 端口流量狗状态通知" | grep -v "port-traffic-dog.*--send-status" > "$temp_cron" || true
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗通知" | grep -v "port-traffic-dog.*--send-.*-status" > "$temp_cron" || true
 
     crontab "$temp_cron"
     rm -f "$temp_cron"

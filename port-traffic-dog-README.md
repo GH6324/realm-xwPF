@@ -103,7 +103,13 @@ wget -O port-traffic-dog.sh https://ghfast.top/https://raw.githubusercontent.com
 - Chat ID
 - 服务器名称
 - 状态通知(可选间隔：1分钟到24小时)
+- 邀请自己的机器人到群组,然后在输入ID那里输入群组ID就可以在群组通知，，输入个人ID就个人通知
 
+## webhook(企业wx 群机器人)通知配置
+
+1. 在企业wx 群中添加群机器人
+2. 获取机器人的 Webhook URL复制
+3. 粘贴到`请输入Webhook URL: ` 即可
 
 ### 贡献代码
 欢迎各种形式的贡献：Bug修复、新功能、文档改进等
