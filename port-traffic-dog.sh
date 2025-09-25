@@ -725,6 +725,7 @@ generate_port_range_mark() {
     echo $(( (start_port * 1000 + end_port) % 65536 ))
 }
 
+# burst速率突发计算
 calculate_tc_burst() {
     local base_rate=$1
     local rate_bytes_per_sec=$((base_rate * 1000000 / 8))
