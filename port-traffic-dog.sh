@@ -2306,7 +2306,8 @@ uninstall_script() {
         local family=$(jq -r '.nftables.family' "$CONFIG_FILE" 2>/dev/null || echo "inet")
         nft delete table $family $table_name >/dev/null 2>&1 || true
 
-        remove_notification_cron 2>/dev/null || true
+        remove_telegram_notification_cron 2>/dev/null || true
+        remove_wecom_notification_cron 2>/dev/null || true
 
         rm -rf "$CONFIG_DIR" 2>/dev/null || true
         rm -f "/usr/local/bin/$SHORTCUT_COMMAND" 2>/dev/null || true
@@ -2348,6 +2349,8 @@ manage_telegram_notifications() {
     local telegram_script="$CONFIG_DIR/notifications/telegram.sh"
 
     if [ -f "$telegram_script" ]; then
+        # 导出通知管理函数供模块使用
+        export_notification_functions
         source "$telegram_script"
         telegram_configure
         manage_notifications
@@ -2363,6 +2366,8 @@ manage_wecom_notifications() {
     local wecom_script="$CONFIG_DIR/notifications/wecom.sh"
 
     if [ -f "$wecom_script" ]; then
+        # 导出通知管理函数供模块使用
+        export_notification_functions
         source "$wecom_script"
         wecom_configure
         manage_notifications
@@ -2374,49 +2379,55 @@ manage_wecom_notifications() {
     fi
 }
 
-setup_notification_cron() {
+setup_telegram_notification_cron() {
     local script_path="$SCRIPT_PATH"
     local temp_cron=$(mktemp)
 
-    # 保留现有任务，移除旧的通知任务
-    crontab -l 2>/dev/null | grep -v "# 端口流量狗通知" | grep -v "port-traffic-dog.*--send-.*-status" > "$temp_cron" || true
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗Telegram通知" > "$temp_cron" || true
 
     # 检查telegram通知是否启用
     local telegram_enabled=$(jq -r '.notifications.telegram.status_notifications.enabled // false' "$CONFIG_FILE")
     if [ "$telegram_enabled" = "true" ]; then
         local status_interval=$(jq -r '.notifications.telegram.status_notifications.interval' "$CONFIG_FILE")
         case "$status_interval" in
-            "1m")  echo "* * * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
-            "15m") echo "*/15 * * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
-            "30m") echo "*/30 * * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
-            "1h")  echo "0 * * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
-            "2h")  echo "0 */2 * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
-            "6h")  echo "0 */6 * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
-            "12h") echo "0 */12 * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
-            "24h") echo "0 0 * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
+            "1m")  echo "* * * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
+            "15m") echo "*/15 * * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
+            "30m") echo "*/30 * * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
+            "1h")  echo "0 * * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
+            "2h")  echo "0 */2 * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
+            "6h")  echo "0 */6 * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
+            "12h") echo "0 */12 * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
+            "24h") echo "0 0 * * * $script_path --send-telegram-status >/dev/null 2>&1  # 端口流量狗Telegram通知" >> "$temp_cron" ;;
         esac
     fi
+
+    crontab "$temp_cron"
+    rm -f "$temp_cron"
+}
+
+setup_wecom_notification_cron() {
+    local script_path="$SCRIPT_PATH"
+    local temp_cron=$(mktemp)
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗企业wx 通知" > "$temp_cron" || true
 
     # 检查企业wx 通知是否启用
     local wecom_enabled=$(jq -r '.notifications.wecom.status_notifications.enabled // false' "$CONFIG_FILE")
     if [ "$wecom_enabled" = "true" ]; then
         local wecom_interval=$(jq -r '.notifications.wecom.status_notifications.interval' "$CONFIG_FILE")
         case "$wecom_interval" in
-            "1m")  echo "* * * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
-            "15m") echo "*/15 * * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
-            "30m") echo "*/30 * * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
-            "1h")  echo "0 * * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
-            "2h")  echo "0 */2 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
-            "6h")  echo "0 */6 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
-            "12h") echo "0 */12 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
-            "24h") echo "0 0 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗通知" >> "$temp_cron" ;;
+            "1m")  echo "* * * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
+            "15m") echo "*/15 * * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
+            "30m") echo "*/30 * * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
+            "1h")  echo "0 * * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
+            "2h")  echo "0 */2 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
+            "6h")  echo "0 */6 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
+            "12h") echo "0 */12 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
+            "24h") echo "0 0 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
         esac
     fi
 
     crontab "$temp_cron"
     rm -f "$temp_cron"
-
-    echo -e "${GREEN}定时任务已更新${NC}"
 }
 
 # 通用间隔选择函数
@@ -2444,16 +2455,24 @@ select_notification_interval() {
     echo "$interval"
 }
 
-remove_notification_cron() {
+remove_telegram_notification_cron() {
     local temp_cron=$(mktemp)
-
-    # 保留现有任务，移除通知任务
-    crontab -l 2>/dev/null | grep -v "# 端口流量狗通知" | grep -v "port-traffic-dog.*--send-.*-status" > "$temp_cron" || true
-
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗Telegram通知" > "$temp_cron" || true
     crontab "$temp_cron"
     rm -f "$temp_cron"
+}
 
-    echo -e "${GREEN}通知定时任务已移除${NC}"
+remove_wecom_notification_cron() {
+    local temp_cron=$(mktemp)
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗企业wx 通知" > "$temp_cron" || true
+    crontab "$temp_cron"
+    rm -f "$temp_cron"
+}
+
+export_notification_functions() {
+    export -f setup_telegram_notification_cron
+    export -f setup_wecom_notification_cron
+    export -f select_notification_interval
 }
 
 setup_port_auto_reset_cron() {

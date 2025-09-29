@@ -231,7 +231,7 @@ telegram_configure_bot() {
     echo -e "${GREEN}状态通知间隔已设置为: $interval${NC}"
 
     # 立即生效
-    setup_notification_cron
+    setup_telegram_notification_cron
 
     echo
     echo "正在发送测试通知..."
@@ -279,7 +279,7 @@ telegram_configure_interval() {
     update_config ".notifications.telegram.status_notifications.interval = \"$interval\""
     echo -e "${GREEN}状态通知间隔已设置为: $interval${NC}"
 
-    setup_notification_cron
+    setup_telegram_notification_cron
 
     sleep 2
 }
@@ -295,7 +295,7 @@ telegram_toggle_status_notifications() {
         echo -e "${GREEN}状态通知已开启${NC}"
     fi
 
-    setup_notification_cron
+    setup_telegram_notification_cron
     sleep 2
 }
 
