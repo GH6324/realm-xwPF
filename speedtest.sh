@@ -1,10 +1,7 @@
 #!/bin/bash
 
 # 中转网络链路测试工具
-# 作者: zywe
-# 项目: https://github.com/zywe03/realm-xwPF
 
-# 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -14,13 +11,12 @@ NC='\033[0m'
 
 # 全局多源下载配置
 DOWNLOAD_SOURCES=(
-    ""  # 官方源
+    ""
     "https://proxy.vvvv.ee/"
     "https://demo.52013120.xyz/"
     "https://ghfast.top/"
 )
 
-# 全局超时配置
 SHORT_CONNECT_TIMEOUT=5
 SHORT_MAX_TIMEOUT=7
 LONG_CONNECT_TIMEOUT=15
@@ -56,9 +52,6 @@ cleanup_on_exit() {
 
     echo -e "\n${YELLOW}脚本已退出，清理完成${NC}"
 }
-
-# User-Agent
-USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 # 统一多源下载函数
 download_from_sources() {
@@ -135,7 +128,6 @@ set_test_result() {
     fi
 }
 
-# 检查root权限
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         echo -e "${RED}错误: 此脚本需要 root 权限运行${NC}"

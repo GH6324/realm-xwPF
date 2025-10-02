@@ -3,7 +3,6 @@
 # xw_realm_OCR.sh - Realm配置文件识别脚本
 # 识别用户的realm配置文件，识别endpoints字段，导入脚本管理
 
-# 颜色定义（与主脚本保持一致）
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -11,7 +10,6 @@ BLUE='\033[0;34m'
 WHITE='\033[1;37m'
 NC='\033[0m'
 
-# 获取GMT+8时间
 get_gmt8_time() {
     TZ='GMT-8' date "$@"
 }
@@ -128,7 +126,7 @@ parse_transport_config() {
         local has_ws=false
         if echo "$transport" | grep -q "ws;"; then
             has_ws=true
-            # 提取WebSocket参数
+
             ws_host=$(echo "$transport" | grep -oP 'host=\K[^;]+' || echo "")
             ws_path=$(echo "$transport" | grep -oP 'path=\K[^;]+' || echo "")
         fi
@@ -137,7 +135,7 @@ parse_transport_config() {
         local has_tls=false
         if echo "$transport" | grep -q "tls"; then
             has_tls=true
-            # 提取TLS参数
+
             if [ "$role" = "1" ]; then
                 # 中转服务器：从sni参数提取
                 tls_server_name=$(echo "$transport" | grep -oP 'sni=\K[^;]+' || echo "")
@@ -189,7 +187,6 @@ parse_transport_config() {
         fi
     fi
 
-    # 返回解析结果（用|分隔）
     echo "$security_level|$tls_server_name|$ws_path|$ws_host"
 }
 
@@ -521,7 +518,6 @@ for rule_file in "$OUTPUT_DIR"/rule-*.conf; do
 done
 echo ""
 
-# 确认导入
 echo -e "${RED}警告: 导入操作将清空现有规则并导入新配置！${NC}"
 echo -e "${YELLOW}这是初始化导入，会删除所有现有的转发规则${NC}"
 echo ""
@@ -532,22 +528,18 @@ if ! echo "$confirm" | grep -qE "^[Yy]$"; then
     exit 1
 fi
 
-# 执行初始化导入
 echo ""
 echo -e "${YELLOW}正在清空现有规则...${NC}"
 
-# 清空现有规则目录
 if [ -d "$RULES_DIR" ]; then
     rm -rf "$RULES_DIR"/*
     echo -e "${GREEN}✓${NC} 已清空现有规则"
 fi
 
-# 重新创建规则目录
 mkdir -p "$RULES_DIR"
 
 echo -e "${YELLOW}正在导入新配置...${NC}"
 
-# 导入规则文件
 imported_count=0
 for rule_file in "$OUTPUT_DIR"/rule-*.conf; do
     if [ -f "$rule_file" ]; then
@@ -558,7 +550,6 @@ for rule_file in "$OUTPUT_DIR"/rule-*.conf; do
     fi
 done
 
-# 清理临时目录
 rm -rf "$OUTPUT_DIR"
 
 if [ $imported_count -gt 0 ]; then

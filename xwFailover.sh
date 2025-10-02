@@ -2,7 +2,6 @@
 
 # 故障转移管理脚本
 
-# 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -10,13 +9,11 @@ BLUE='\033[0;34m'
 WHITE='\033[1;37m'
 NC='\033[0m'
 
-# 全局变量
 RULES_DIR="/etc/realm/rules"
 HEALTH_STATUS_FILE="/etc/realm/health/health_status.conf"
 HEALTH_DIR="/etc/realm/health"
 LOCK_FILE="/var/lock/realm-health-check.lock"
 
-# 检查root权限
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         echo -e "${RED}错误: 此脚本需要 root 权限运行。${NC}"
@@ -73,7 +70,7 @@ find_file_path() {
     local cache_file="/tmp/realm_path_cache"
     local cache_timeout=3600
 
-    # 第一阶段：常见位置直接检查
+    # 常见位置直接检查
     local common_paths=(
         "/etc/realm/health/$filename"
         "/etc/realm/$filename"
@@ -90,7 +87,7 @@ find_file_path() {
         fi
     done
 
-    # 第二阶段：缓存检查
+    # 缓存检查
     if [ -f "$cache_file" ]; then
         local cache_age=$(($(date +%s) - $(stat -c %Y "$cache_file" 2>/dev/null || echo 0)))
         if [ "$cache_age" -lt "$cache_timeout" ]; then
@@ -102,7 +99,7 @@ find_file_path() {
         fi
     fi
 
-    # 第三阶段：全局搜索
+    # 全局搜索
     local found_path=$(find /etc /var /opt /usr/local -name "$filename" -type f 2>/dev/null | head -1)
     if [ -n "$found_path" ]; then
         echo "$filename:$found_path" >> "$cache_file"
@@ -336,6 +333,21 @@ done
 # 如果找不到，使用默认路径
 if [ -z "$HEALTH_STATUS_FILE" ]; then
     HEALTH_STATUS_FILE="$HEALTH_DIR/health_status.conf"
+fi
+
+# 内置清理：清理状态文件（>5MB按行截断保留2000行）
+if [ -f "$HEALTH_STATUS_FILE" ]; then
+    file_size=$(stat -c%s "$HEALTH_STATUS_FILE" 2>/dev/null || echo 0)
+    if [ "$file_size" -gt 5242880 ]; then
+        tail -n 2000 "$HEALTH_STATUS_FILE" > "$HEALTH_STATUS_FILE.tmp" 2>/dev/null
+        mv "$HEALTH_STATUS_FILE.tmp" "$HEALTH_STATUS_FILE" 2>/dev/null
+    fi
+fi
+
+# 内置清理：清理journal日志（保留7天，每小时整点执行）
+current_minute=$(date +%M)
+if [ "$current_minute" = "00" ]; then
+    journalctl --vacuum-time=7d >/dev/null 2>&1
 fi
 
 # 获取文件锁
@@ -595,9 +607,6 @@ show_health_status() {
     fi
 }
 
-
-
-# 显示使用帮助
 show_help() {
     echo -e "${GREEN}xwFailover.sh - Realm故障转移管理脚本${NC}"
     echo ""

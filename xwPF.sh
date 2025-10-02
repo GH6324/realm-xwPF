@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SCRIPT_VERSION="v2.1.3"
+SCRIPT_VERSION="v2.1.4"
 REALM_VERSION="v2.9.2"
 
 NAT_LISTEN_PORT=""
@@ -41,7 +41,7 @@ init_rule_field() {
     done
 }
 
-# 通用的服务重启后确认函数
+# 通用的服务重启函数
 restart_and_confirm() {
     local operation_name="$1"
     local batch_mode="$2"
@@ -3808,17 +3808,21 @@ configure_nat_server() {
     echo -e "${YELLOW}=== 中转服务器配置(不了解入口出口一般回车默认即可) ===${NC}"
     echo ""
 
-    # 配置监听端口
-    echo -e "${BLUE}多端口使用,逗号分隔${NC}"
-    while true; do
-        read -p "请输入本地监听端口 (客户端连接的端口，nat机需使用分配的端口): " NAT_LISTEN_PORT
-        if validate_ports "$NAT_LISTEN_PORT"; then
-            echo -e "${GREEN}监听端口设置为: $NAT_LISTEN_PORT${NC}"
-            break
-        else
-            echo -e "${RED}无效端口号，请输入 1-65535 之间的数字，多端口用逗号分隔${NC}"
-        fi
-    done
+echo -e "${BLUE}多端口使用,逗号分隔(回车随机端口)${NC}"
+while true; do
+    read -p "请输入本地监听端口 (客户端连接的端口，nat机需使用分配的端口): " NAT_LISTEN_PORT
+
+    if [[ -z "$NAT_LISTEN_PORT" ]]; then
+        NAT_LISTEN_PORT=$((RANDOM % 64512 + 1024))
+    fi
+
+    if validate_ports "$NAT_LISTEN_PORT"; then
+        echo -e "${GREEN}监听端口设置为: $NAT_LISTEN_PORT${NC}"
+        break
+    else
+        echo -e "${RED}无效端口号，请输入 1-65535 之间的数字，多端口用逗号分隔${NC}"
+    fi
+done
 
     # 检查是否为多端口
     local is_multi_port=false
@@ -3892,7 +3896,6 @@ configure_nat_server() {
             read -p "自定义(指定)出口IP地址(适用于中转多IP出口情况,回车默认全部监听 ::): " through_ip_input
 
             if [ -z "$through_ip_input" ]; then
-                # 使用默认值：双栈监听
                 NAT_THROUGH_IP="::"
                 echo -e "${GREEN}使用默认出口IP: :: (全部监听)${NC}"
                 break
@@ -3919,7 +3922,6 @@ configure_nat_server() {
     while true; do
         read -p "出口服务器的IP地址或域名: " REMOTE_IP
         if [ -n "$REMOTE_IP" ]; then
-            # 检查是否为有效的IP或域名格式
             if validate_ip "$REMOTE_IP" || [[ "$REMOTE_IP" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
                 break
             else
@@ -3962,7 +3964,6 @@ configure_nat_server() {
         if ! validate_ip "$REMOTE_IP" && [[ "$REMOTE_IP" =~ ^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
             echo -e "${YELLOW}检测到您使用的是域名地址，如果是DDNS域名：${NC}"
             echo -e "${YELLOW}确认域名和端口正确后，直接继续配置无需担心${NC}"
-            echo -e "${YELLOW}DDNS域名无法进行连通性测试${NC}"
         fi
 
         read -p "是否继续配置？(y/n): " continue_config
@@ -3974,10 +3975,10 @@ configure_nat_server() {
 
     # 如果端口被realm占用，跳过协议和传输配置
     if [ $port_status -eq 1 ]; then
-        # 跳过协议和传输配置，直接进入规则创建
+
         echo -e "${BLUE}使用默认配置完成设置${NC}"
     else
-    # 传输模式选择
+
     echo ""
     echo "请选择传输模式:"
     echo -e "${GREEN}[1]${NC} 默认传输 (不加密，理论最快)"
@@ -4000,7 +4001,6 @@ configure_nat_server() {
                 SECURITY_LEVEL="ws"
                 echo -e "${GREEN}已选择: WebSocket${NC}"
 
-                # WebSocket Host配置
                 echo ""
                 read -p "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
                 if [ -z "$WS_HOST" ]; then
@@ -4008,7 +4008,6 @@ configure_nat_server() {
                 fi
                 echo -e "${GREEN}WebSocket Host设置为: $WS_HOST${NC}"
 
-                # WebSocket路径配置
                 echo ""
                 read -p "请输入WebSocket路径 [默认: /ws]: " WS_PATH
                 if [ -z "$WS_PATH" ]; then
@@ -4021,7 +4020,6 @@ configure_nat_server() {
                 SECURITY_LEVEL="tls_self"
                 echo -e "${GREEN}已选择: TLS自签证书${NC}"
 
-                # TLS服务器名称配置
                 echo ""
                 read -p "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
                 if [ -z "$TLS_SERVER_NAME" ]; then
@@ -4034,7 +4032,6 @@ configure_nat_server() {
                 SECURITY_LEVEL="tls_ca"
                 echo -e "${GREEN}已选择: TLS CA证书${NC}"
 
-                # 证书路径配置
                 echo ""
                 while true; do
                     read -p "请输入证书文件路径: " TLS_CERT_PATH
@@ -4062,7 +4059,6 @@ configure_nat_server() {
                 SECURITY_LEVEL="ws_tls_self"
                 echo -e "${GREEN}已选择: TLS+WebSocket自签证书${NC}"
 
-                # WebSocket Host配置
                 echo ""
                 read -p "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
                 if [ -z "$WS_HOST" ]; then
@@ -4070,7 +4066,6 @@ configure_nat_server() {
                 fi
                 echo -e "${GREEN}WebSocket Host设置为: $WS_HOST${NC}"
 
-                # TLS服务器名称配置
                 echo ""
                 read -p "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
                 if [ -z "$TLS_SERVER_NAME" ]; then
@@ -4078,7 +4073,6 @@ configure_nat_server() {
                 fi
                 echo -e "${GREEN}TLS服务器名称设置为: $TLS_SERVER_NAME${NC}"
 
-                # WebSocket路径配置
                 read -p "请输入WebSocket路径 [默认: /ws]: " WS_PATH
                 if [ -z "$WS_PATH" ]; then
                     WS_PATH="/ws"
@@ -4090,7 +4084,6 @@ configure_nat_server() {
                 SECURITY_LEVEL="ws_tls_ca"
                 echo -e "${GREEN}已选择: TLS+WebSocket CA证书${NC}"
 
-                # WebSocket Host配置
                 echo ""
                 read -p "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
                 if [ -z "$WS_HOST" ]; then
@@ -4098,7 +4091,6 @@ configure_nat_server() {
                 fi
                 echo -e "${GREEN}WebSocket Host设置为: $WS_HOST${NC}"
 
-                # 证书路径配置
                 echo ""
                 while true; do
                     read -p "请输入证书文件路径: " TLS_CERT_PATH
@@ -4120,7 +4112,6 @@ configure_nat_server() {
 
                 read -p "请输入TLS服务器名称 (SNI): " TLS_SERVER_NAME
 
-                # WebSocket路径配置
                 read -p "请输入WebSocket路径 [默认: /ws]: " WS_PATH
                 if [ -z "$WS_PATH" ]; then
                     WS_PATH="/ws"
@@ -4134,9 +4125,8 @@ configure_nat_server() {
         esac
     done
 
-    fi  # 结束端口占用检查的条件判断
+    fi
 
-    # 配置规则备注
     echo ""
     echo -e "${BLUE}=== 规则备注配置 ===${NC}"
 
@@ -4169,7 +4159,6 @@ configure_exit_server() {
     echo -e "${YELLOW}=== 解密并转发服务器配置 (双端Realm架构) ===${NC}"
     echo ""
 
-    # 显示本机公网IP
     echo "正在获取本机公网IP..."
     local ipv4=$(get_public_ip "ipv4")
     local ipv6=$(get_public_ip "ipv6")
@@ -4186,7 +4175,6 @@ configure_exit_server() {
     fi
     echo ""
 
-    # 配置监听端口
     echo -e "${BLUE}多端口使用,逗号分隔${NC}"
     while true; do
         read -p "请输入监听端口 (等待中转服务器连接的端口，NAT VPS需使用商家分配的端口): " EXIT_LISTEN_PORT
@@ -4198,14 +4186,13 @@ configure_exit_server() {
         fi
     done
 
-    # 检查是否为多端口
     local is_multi_port=false
 
     if [[ "$EXIT_LISTEN_PORT" == *","* ]]; then
         is_multi_port=true
         echo -e "${BLUE}检测到多端口配置，跳过端口占用检测${NC}"
     else
-        # 单端口检测
+
         check_port_usage "$EXIT_LISTEN_PORT" "出口服务器监听"
     fi
 
@@ -4307,7 +4294,6 @@ configure_exit_server() {
         echo -e "${GREEN}✓ 所有转发目标连接测试成功！${NC}"
     fi
 
-    # 传输模式选择
     echo ""
     echo "请选择传输模式:"
     echo -e "${GREEN}[1]${NC} 默认传输 (不加密，理论最快)"
@@ -4330,7 +4316,6 @@ configure_exit_server() {
                 SECURITY_LEVEL="ws"
                 echo -e "${GREEN}已选择: WebSocket${NC}"
 
-                # WebSocket Host配置
                 echo ""
                 read -p "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
                 if [ -z "$WS_HOST" ]; then
@@ -4338,7 +4323,6 @@ configure_exit_server() {
                 fi
                 echo -e "${GREEN}WebSocket Host设置为: $WS_HOST${NC}"
 
-                # WebSocket路径配置
                 echo ""
                 read -p "请输入WebSocket路径 [默认: /ws]: " WS_PATH
                 if [ -z "$WS_PATH" ]; then
@@ -4351,7 +4335,6 @@ configure_exit_server() {
                 SECURITY_LEVEL="tls_self"
                 echo -e "${GREEN}已选择: TLS自签证书${NC}"
 
-                # TLS服务器名称配置
                 echo ""
                 read -p "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
                 if [ -z "$TLS_SERVER_NAME" ]; then
@@ -4364,7 +4347,6 @@ configure_exit_server() {
                 SECURITY_LEVEL="tls_self"
                 echo -e "${GREEN}已选择: TLS自签证书${NC}"
 
-                # TLS服务器名称配置
                 echo ""
                 read -p "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
                 if [ -z "$TLS_SERVER_NAME" ]; then
@@ -4377,7 +4359,6 @@ configure_exit_server() {
                 SECURITY_LEVEL="tls_ca"
                 echo -e "${GREEN}已选择: TLS CA证书${NC}"
 
-                # 证书路径配置
                 echo ""
                 while true; do
                     read -p "请输入证书文件路径: " TLS_CERT_PATH
@@ -4405,7 +4386,6 @@ configure_exit_server() {
                 SECURITY_LEVEL="ws_tls_self"
                 echo -e "${GREEN}已选择: TLS+WebSocket自签证书${NC}"
 
-                # WebSocket Host配置
                 echo ""
                 read -p "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
                 if [ -z "$WS_HOST" ]; then
@@ -4413,7 +4393,6 @@ configure_exit_server() {
                 fi
                 echo -e "${GREEN}WebSocket Host设置为: $WS_HOST${NC}"
 
-                # TLS服务器名称配置
                 echo ""
                 read -p "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
                 if [ -z "$TLS_SERVER_NAME" ]; then
@@ -4421,7 +4400,6 @@ configure_exit_server() {
                 fi
                 echo -e "${GREEN}TLS服务器名称设置为: $TLS_SERVER_NAME${NC}"
 
-                # WebSocket路径配置
                 read -p "请输入WebSocket路径 [默认: /ws]: " WS_PATH
                 if [ -z "$WS_PATH" ]; then
                     WS_PATH="/ws"
@@ -4433,7 +4411,6 @@ configure_exit_server() {
                 SECURITY_LEVEL="ws_tls_ca"
                 echo -e "${GREEN}已选择: TLS+WebSocket CA证书${NC}"
 
-                # WebSocket Host配置
                 echo ""
                 read -p "请输入WebSocket Host [默认: $DEFAULT_SNI_DOMAIN]: " WS_HOST
                 if [ -z "$WS_HOST" ]; then
@@ -4441,7 +4418,6 @@ configure_exit_server() {
                 fi
                 echo -e "${GREEN}WebSocket Host设置为: $WS_HOST${NC}"
 
-                # 证书路径配置
                 echo ""
                 while true; do
                     read -p "请输入证书文件路径: " TLS_CERT_PATH
@@ -4463,7 +4439,6 @@ configure_exit_server() {
 
                 read -p "请输入TLS服务器名称 (SNI): " TLS_SERVER_NAME
 
-                # WebSocket路径配置
                 read -p "请输入WebSocket路径 [默认: /ws]: " WS_PATH
                 if [ -z "$WS_PATH" ]; then
                     WS_PATH="/ws"
@@ -4477,7 +4452,6 @@ configure_exit_server() {
         esac
     done
 
-    # 配置规则备注
     echo ""
     echo -e "${BLUE}=== 规则备注配置 ===${NC}"
 
@@ -4628,190 +4602,6 @@ diagnose_system() {
     echo ""
 }
 
-# 多线程并行搜索xwPF.sh脚本位置（带缓存）
-find_script_locations_enhanced() {
-    local cache_file="/tmp/xwPF_script_locations_cache"
-    local cache_timeout=604800  # 7天缓存，用户几乎不会改变脚本位置
-
-    # 检查缓存是否有效
-    if [ -f "$cache_file" ]; then
-        local cache_age=$(($(date +%s) - $(stat -c %Y "$cache_file" 2>/dev/null || echo 0)))
-        if [ $cache_age -lt $cache_timeout ]; then
-            cat "$cache_file"
-            return 0
-        fi
-    fi
-
-    echo -e "${BLUE}正在多线程搜索脚本位置...${NC}" >&2
-
-    local temp_file=$(mktemp)
-    local search_roots=("/" "/usr" "/opt" "/home" "/root" "/var" "/tmp" "/etc")
-
-    # 并行搜索不同的根目录
-    for root in "${search_roots[@]}"; do
-        if [ -d "$root" ] && [ -r "$root" ]; then
-            (
-                # 使用timeout避免搜索卡死
-                if command -v timeout >/dev/null 2>&1; then
-                    timeout 30 find "$root" -name "xwPF.sh" -type f 2>/dev/null | while read -r file; do
-                        if [ -f "$file" ] && [ -r "$file" ]; then
-                            echo "$(dirname "$file")" >> "$temp_file"
-                        fi
-                    done
-                else
-                    find "$root" -name "xwPF.sh" -type f 2>/dev/null | while read -r file; do
-                        if [ -f "$file" ] && [ -r "$file" ]; then
-                            echo "$(dirname "$file")" >> "$temp_file"
-                        fi
-                    done
-                fi
-            ) &
-        fi
-    done
-    wait  # 等待所有搜索完成
-
-    # 处理搜索结果
-    local all_locations=()
-    if [ -f "$temp_file" ] && [ -s "$temp_file" ]; then
-        while IFS= read -r dir; do
-            if [ -d "$dir" ] && [ -r "$dir" ]; then
-                all_locations+=("$dir")
-            fi
-        done < <(sort -u "$temp_file")
-    fi
-    rm -f "$temp_file"
-
-    # 评分和排序
-    local scored_locations=()
-    for dir in "${all_locations[@]}"; do
-        local score=0
-        local path_length=${#dir}
-
-        # 用户自定义位置优先（非系统目录）+20分
-        if [[ "$dir" != "/usr/local/bin" && "$dir" != "/usr/bin" && "$dir" != "/bin" && "$dir" != "/usr/sbin" ]]; then
-            score=$((score + 20))
-        fi
-
-        # 包含realm压缩包+15分
-        if ls "$dir"/realm-*.tar.gz >/dev/null 2>&1 || ls "$dir"/realm-*.zip >/dev/null 2>&1; then
-            score=$((score + 15))
-        fi
-
-        # 包含JSON配置文件+10分
-        if ls "$dir"/*.json >/dev/null 2>&1; then
-            score=$((score + 10))
-        fi
-
-        # 包含其他配置文件+5分
-        if ls "$dir"/*.conf >/dev/null 2>&1 || ls "$dir"/*.yaml >/dev/null 2>&1; then
-            score=$((score + 5))
-        fi
-
-        # 当前工作目录+3分
-        if [ "$dir" = "$(pwd)" ]; then
-            score=$((score + 3))
-        fi
-
-        # 路径越短越好（用于同分情况下的排序）
-        scored_locations+=("$score:$path_length:$dir")
-    done
-
-    # 按分数排序（分数高的在前），分数相同时按路径长度排序（短的在前）
-    local sorted_locations=($(printf '%s\n' "${scored_locations[@]}" | sort -t: -k1,1nr -k2,2n))
-
-    # 提取目录路径并保存到缓存
-    local final_locations=()
-    for item in "${sorted_locations[@]}"; do
-        local dir=$(echo "$item" | cut -d: -f3)
-        final_locations+=("$dir")
-    done
-
-    # 保存到缓存
-    printf '%s\n' "${final_locations[@]}" > "$cache_file"
-
-    # 输出结果
-    printf '%s\n' "${final_locations[@]}"
-}
-
-
-
-
-
-# 确定工作目录 - 统一逻辑
-get_work_dir() {
-    local virt_env=$(detect_virtualization)
-
-    # 只有这些容器环境需要特殊处理
-    case "$virt_env" in
-        *"LXC"*|*"OpenVZ"*|*"Docker"*)
-            local temp_dir=$(get_temp_dir)
-            echo "$temp_dir"
-            ;;
-        *)
-            # 所有其他环境（KVM、VMware、物理机等）都用当前目录
-            echo "."
-            ;;
-    esac
-}
-
-# 从本地压缩包安装realm
-install_realm_from_local_package() {
-    local package_path="$1"
-    local temp_dir=$(mktemp -d)
-
-    echo -e "${YELLOW}正在从本地压缩包安装 realm...${NC}"
-    echo -e "${BLUE}压缩包: $(basename "$package_path")${NC}"
-
-    # 解压到临时目录
-    if [[ "$package_path" == *.tar.gz ]]; then
-        if ! tar -xzf "$package_path" -C "$temp_dir" 2>/dev/null; then
-            echo -e "${RED}✗ 解压失败${NC}"
-            rm -rf "$temp_dir"
-            return 1
-        fi
-    elif [[ "$package_path" == *.zip ]]; then
-        if ! unzip -q "$package_path" -d "$temp_dir" 2>/dev/null; then
-            echo -e "${RED}✗ 解压失败${NC}"
-            rm -rf "$temp_dir"
-            return 1
-        fi
-    else
-        echo -e "${RED}✗ 不支持的压缩包格式${NC}"
-        rm -rf "$temp_dir"
-        return 1
-    fi
-
-    # 查找realm二进制文件
-    local realm_binary=$(find "$temp_dir" -name "realm" -type f -executable 2>/dev/null | head -1)
-
-    if [ -n "$realm_binary" ] && [ -f "$realm_binary" ]; then
-        # 检查并停止正在运行的realm服务
-        local service_was_running=$(safe_stop_realm_service)
-        if [ $? -ne 0 ]; then
-            rm -rf "$temp_dir"
-            return 1
-        fi
-
-        # 复制到目标位置
-        if cp "$realm_binary" "$REALM_PATH" && chmod +x "$REALM_PATH"; then
-            echo -e "${GREEN}✓ realm 安装成功${NC}"
-
-            # 根据之前的服务状态决定重启方式（更新场景）
-            restart_realm_service "$service_was_running" true
-
-            rm -rf "$temp_dir"
-            return 0
-        else
-            echo -e "${RED}✗ 复制文件失败${NC}"
-            rm -rf "$temp_dir"
-            return 1
-        fi
-    else
-        echo -e "${RED}✗ 压缩包中未找到 realm 二进制文件${NC}"
-        rm -rf "$temp_dir"
-        return 1
-    fi
-}
 
 # 统一多源下载函数
 download_from_sources() {
@@ -4844,55 +4634,14 @@ download_from_sources() {
     return 1
 }
 
-# 下载函数
-reliable_download() {
-    local url="$1"
-    local filename="$2"
-
-    # 确定工作目录
-    local work_dir=$(get_work_dir)
-    if [ "$work_dir" = "." ]; then
-        work_dir="$(pwd)"
-    fi
-
-    local file_path="${work_dir}/${filename}"
-    rm -f "$file_path"
-
-    # curl下载（带进度条）
-    if command -v curl >/dev/null 2>&1; then
-        if curl -L --progress-bar --fail --connect-timeout $LONG_CONNECT_TIMEOUT --max-time $LONG_MAX_TIMEOUT -o "$file_path" "$url"; then
-            if [ -f "$file_path" ] && [ -s "$file_path" ]; then
-                echo "$file_path"
-                return 0
-            fi
-        fi
-    fi
-
-    # wget备用
-    if command -v wget >/dev/null 2>&1; then
-        rm -f "$file_path"
-        if wget --progress=bar:force -O "$file_path" "$url"; then
-            if [ -f "$file_path" ] && [ -s "$file_path" ]; then
-                echo "$file_path"
-                return 0
-            fi
-        fi
-    fi
-
-    rm -f "$file_path"
-    return 1
-}
-
 # 获取realm最新版本号
 get_latest_realm_version() {
     echo -e "${YELLOW}获取最新版本信息...${NC}" >&2
 
-    # 直接解析releases页面获取版本号，超时机制
     local latest_version=$(curl -sL --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT "https://github.com/zhboner/realm/releases" 2>/dev/null | \
         head -2100 | \
         sed -n 's|.*releases/tag/v\([0-9.]*\).*|v\1|p' | head -1)
 
-    # 如果失败，使用硬编码版本号
     if [ -z "$latest_version" ]; then
         echo -e "${YELLOW}使用当前最新版本 ${REALM_VERSION}${NC}" >&2
         latest_version="$REALM_VERSION"
@@ -4929,10 +4678,10 @@ compare_and_ask_update() {
     # 提取当前版本号进行比较
     local current_ver=$(echo "$current_version" | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -1)
     if [ -z "$current_ver" ]; then
-        current_ver="v0.0.0"  # 如果无法提取版本号，假设为旧版本
+        current_ver="v0.0.0"
     fi
 
-    # 统一版本格式（都添加v前缀）
+    # 统一版本格式（添加v前缀）
     if [[ ! "$current_ver" =~ ^v ]]; then
         current_ver="v$current_ver"
     fi
@@ -5018,90 +4767,69 @@ install_realm() {
         LATEST_VERSION=$(get_latest_realm_version)
     fi
 
-    # 检测本地压缩包
-    echo -e "${YELLOW}检测本地 realm 压缩包...${NC}"
-    local locations=($(find_script_locations_enhanced))
-    local script_dir="${locations[0]}"
-    echo -e "${BLUE}脚本工作目录: $script_dir${NC}"
-
-    local local_packages=($(find "$script_dir" -maxdepth 1 -name "realm-*.tar.gz" -o -name "realm-*.zip" 2>/dev/null))
-
-    if [ ${#local_packages[@]} -gt 0 ]; then
-        echo -e "${GREEN}✓ 发现本地 realm 压缩包: $(basename "${local_packages[0]}")${NC}"
-        read -p "是否使用本地压缩包安装？(y/n) [默认: y]: " use_local
-        if [[ "$use_local" =~ ^[Nn]$ ]]; then
-            echo -e "${BLUE}跳过本地安装，使用在线下载...${NC}"
-        else
-            if install_realm_from_local_package "${local_packages[0]}"; then
-                echo -e "${GREEN}✓ 本地压缩包安装成功${NC}"
-                # 启动空服务完成安装
-                start_empty_service
-                return 0
-            else
-                echo -e "${YELLOW}本地安装失败，继续在线下载...${NC}"
-            fi
-        fi
-    else
-        echo -e "${BLUE}未发现本地压缩包，使用在线下载...${NC}"
-    fi
-
-    # 检测系统架构
-    ARCH=$(uname -m)
-    case $ARCH in
-        x86_64)
-            ARCH="x86_64-unknown-linux-gnu"
-            ;;
-        aarch64)
-            ARCH="aarch64-unknown-linux-gnu"
-            ;;
-        armv7l|armv6l|arm)
-            ARCH="armv7-unknown-linux-gnueabihf"
-            ;;
-        *)
-            echo -e "${RED}不支持的CPU架构: ${ARCH}${NC}"
-            echo -e "${YELLOW}支持的架构: x86_64, aarch64, armv7l${NC}"
-            exit 1
-            ;;
-    esac
-
-    # 构建下载URL - 支持多源下载
-    DOWNLOAD_URL="https://github.com/zhboner/realm/releases/download/${LATEST_VERSION}/realm-${ARCH}.tar.gz"
-    echo -e "${BLUE}目标文件: realm-${ARCH}.tar.gz${NC}"
-
-    # 使用多源下载策略
+    # 离线安装选项
     local download_file=""
-    local work_dir=$(get_work_dir)
-    if [ "$work_dir" = "." ]; then
-        work_dir="$(pwd)"
-    fi
-    local file_path="${work_dir}/realm.tar.gz"
-
-    if download_from_sources "$DOWNLOAD_URL" "$file_path"; then
-        echo -e "${GREEN}✓ 下载成功: ${file_path}${NC}"
-        download_file="$file_path"
+    read -p "离线安装realm输入完整路径(回车默认自动下载): " local_package_path
+    
+    if [ -n "$local_package_path" ] && [ -f "$local_package_path" ]; then
+        echo -e "${GREEN}✓ 使用本地文件: $local_package_path${NC}"
+        download_file="$local_package_path"
     else
-        echo -e "${RED}✗ 下载失败${NC}"
-        exit 1
+        if [ -n "$local_package_path" ]; then
+            echo -e "${RED}✗ 文件不存在，继续在线下载${NC}"
+        fi
+        
+        ARCH=$(uname -m)
+        case $ARCH in
+            x86_64)
+                ARCH="x86_64-unknown-linux-gnu"
+                ;;
+            aarch64)
+                ARCH="aarch64-unknown-linux-gnu"
+                ;;
+            armv7l|armv6l|arm)
+                ARCH="armv7-unknown-linux-gnueabihf"
+                ;;
+            *)
+                echo -e "${RED}不支持的CPU架构: ${ARCH}${NC}"
+                echo -e "${YELLOW}支持的架构: x86_64, aarch64, armv7l${NC}"
+                exit 1
+                ;;
+        esac
+
+        DOWNLOAD_URL="https://github.com/zhboner/realm/releases/download/${LATEST_VERSION}/realm-${ARCH}.tar.gz"
+        echo -e "${BLUE}目标文件: realm-${ARCH}.tar.gz${NC}"
+
+        local file_path="$(pwd)/realm.tar.gz"
+        if download_from_sources "$DOWNLOAD_URL" "$file_path"; then
+            echo -e "${GREEN}✓ 下载成功: ${file_path}${NC}"
+            download_file="$file_path"
+        else
+            echo -e "${RED}✗ 下载失败${NC}"
+            exit 1
+        fi
     fi
 
     # 解压安装
     echo -e "${YELLOW}正在解压安装...${NC}"
 
-    # 检查并停止正在运行的realm服务
     local service_was_running=$(safe_stop_realm_service)
     if [ $? -ne 0 ]; then
         return 1
     fi
 
-    # 解压安装
     local work_dir=$(dirname "$download_file")
     local archive_name=$(basename "$download_file")
 
     if (cd "$work_dir" && tar -xzf "$archive_name" && cp realm ${REALM_PATH} && chmod +x ${REALM_PATH}); then
         echo -e "${GREEN}✓ realm 安装成功${NC}"
-        rm -f "$download_file" "${work_dir}/realm"
+        
+        # 只删除自动下载的文件，保留用户提供的本地文件
+        if [ -z "$local_package_path" ]; then
+            rm -f "$download_file"
+        fi
+        rm -f "${work_dir}/realm"
 
-        # 根据之前的服务状态决定重启方式（更新场景）
         restart_realm_service "$service_was_running" true
     else
         echo -e "${RED}✗ 安装失败${NC}"
@@ -5649,14 +5377,11 @@ generate_endpoints_from_rules() {
     echo "$endpoints"
 }
 
-# 生成 realm 配置文件 - 支持多规则和动态配置
 generate_realm_config() {
     echo -e "${YELLOW}正在生成 Realm 配置文件...${NC}"
 
-    # 创建配置目录
     mkdir -p "$CONFIG_DIR"
 
-    # 初始化规则目录
     init_rules_dir
 
     # 检查是否有启用的规则
@@ -5674,7 +5399,6 @@ generate_realm_config() {
         done
     fi
 
-    # 如果没有启用的规则，生成空配置
     if [ "$has_rules" = false ]; then
         echo -e "${BLUE}未找到启用的规则，生成空配置${NC}"
         generate_complete_config ""
@@ -5718,7 +5442,6 @@ generate_realm_config() {
     done
 }
 
-# 生成 systemd 服务文件
 generate_systemd_service() {
     echo -e "${YELLOW}正在生成 systemd 服务文件...${NC}"
     cat > "$SYSTEMD_PATH" <<EOF
@@ -5766,20 +5489,16 @@ EOF
 start_empty_service() {
     echo -e "${YELLOW}正在初始化配置以完成安装...${NC}"
 
-    # 创建最基本的配置目录
     mkdir -p "$CONFIG_DIR"
 
-    # 创建最空配置文件
     cat > "$CONFIG_PATH" <<EOF
 {
     "endpoints": []
 }
 EOF
 
-    # 创建 systemd 服务文件（必需的）
     generate_systemd_service
 
-    # 启用并启动服务
     systemctl enable realm >/dev/null 2>&1
     systemctl start realm >/dev/null 2>&1
 }
@@ -5792,18 +5511,14 @@ self_install() {
     local install_dir="/usr/local/bin"
     local shortcut_name="pf"
 
-    # 创建安装目录
     mkdir -p "$install_dir"
 
-    # 检查系统目录是否已有脚本，优先执行更新逻辑
     if [ -f "${install_dir}/${script_name}" ]; then
         echo -e "${GREEN}✓ 检测到系统已安装脚本，正在更新...${NC}"
 
-        # 自动从GitHub下载最新版本覆盖更新
         echo -e "${BLUE}正在从GitHub下载最新脚本...${NC}"
         local base_script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xwPF.sh"
 
-        # 使用统一多源下载函数
         if download_from_sources "$base_script_url" "${install_dir}/${script_name}"; then
             chmod +x "${install_dir}/${script_name}"
         else
@@ -5820,7 +5535,6 @@ self_install() {
         echo -e "${BLUE}正在从GitHub下载脚本...${NC}"
         local base_script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xwPF.sh"
 
-        # 使用统一多源下载函数
         if download_from_sources "$base_script_url" "${install_dir}/${script_name}"; then
             chmod +x "${install_dir}/${script_name}"
         else
@@ -5857,20 +5571,19 @@ EOF
     return 0
 }
 
-# 智能安装和配置流程
+# 安装和配置流程
 smart_install() {
     echo -e "${GREEN}=== xwPF Realm 一键脚本智能安装 $SCRIPT_VERSION ===${NC}"
     echo ""
 
-    # 步骤1: 检测系统
     detect_system
     echo -e "${BLUE}检测到系统: ${GREEN}$OS $VER${NC}"
     echo ""
 
-    # 步骤2: 安装依赖
+    # 安装依赖
     manage_dependencies "install"
 
-    # 步骤3: 自安装脚本
+    # 自安装脚本
     if ! self_install; then
         echo -e "${RED}脚本安装失败${NC}"
         exit 1
@@ -5879,14 +5592,12 @@ smart_install() {
     echo -e "${GREEN}=== 脚本安装完成！ ===${NC}"
     echo ""
 
-    # 步骤4: 下载最新的 realm 主程序
+    # 下载最新的 realm 主程序
     if install_realm; then
         echo -e "${GREEN}=== 安装完成！ ===${NC}"
         echo -e "${YELLOW}输入快捷命令 ${GREEN}pf${YELLOW} 进入脚本交互界面${NC}"
     else
         echo -e "${RED}错误: realm安装失败${NC}"
-        echo -e "${YELLOW}可能原因: 网络连接问题或所有下载源均不可用${NC}"
-        echo -e "${BLUE}稍后重试或参考https://github.com/zywe03/realm-xwPF#离线安装${NC}"
         echo -e "${YELLOW}输入快捷命令 ${GREEN}pf${YELLOW} 可进入脚本交互界面${NC}"
     fi
 }
@@ -5917,7 +5628,6 @@ service_stop() {
     fi
 }
 
-# 服务管理 - 重启
 service_restart() {
     echo -e "${YELLOW}正在重启 Realm 服务...${NC}"
 
@@ -5941,7 +5651,7 @@ service_restart() {
     fi
 }
 
-# 服务管理 - 状态
+# 服务管理
 service_status() {
     echo -e "${YELLOW}Realm 服务状态:${NC}"
     echo ""
@@ -5967,7 +5677,6 @@ service_status() {
         echo -e "开机启动: ${YELLOW}未启用${NC}"
     fi
 
-    # 显示配置信息
     echo ""
     echo -e "${BLUE}配置信息:${NC}"
 
@@ -6028,7 +5737,6 @@ service_status() {
     echo ""
     echo -e "${BLUE}端口监听状态:${NC}"
 
-    # 使用 ss 命令检测端口（Debian/Ubuntu标准工具）
     local port_check_cmd="ss -tlnp"
 
     # 检查端口监听状态
@@ -6103,12 +5811,6 @@ uninstall_realm_stage_one() {
     # 清理xwFailover.sh相关文件
     rm -f "/etc/realm/xwFailover.sh"
 
-    # 清理独立清理定时器
-    systemctl stop realm-cleanup.timer >/dev/null 2>&1
-    systemctl disable realm-cleanup.timer >/dev/null 2>&1
-    rm -f "/etc/systemd/system/realm-cleanup.timer"
-    rm -f "/etc/systemd/system/realm-cleanup.service"
-
     # 清理系统配置
     [ -f "/etc/sysctl.d/90-enable-MPTCP.conf" ] && rm -f "/etc/sysctl.d/90-enable-MPTCP.conf"
     command -v ip >/dev/null 2>&1 && ip mptcp endpoint flush 2>/dev/null
@@ -6117,7 +5819,6 @@ uninstall_realm_stage_one() {
 
 # 第二阶段：清理脚本文件
 uninstall_script_files() {
-    # 清理 xwPF.sh 文件
     cleanup_files_by_pattern "xwPF.sh" "/"
 
     # 清理 pf 命令（验证后删除）
@@ -6152,7 +5853,6 @@ cleanup_files_by_pattern() {
     done
     wait
 }
-
 
 # 查看当前配置
 show_config() {
@@ -6236,11 +5936,9 @@ show_config() {
         echo -e "${BLUE}规则信息:${NC} 使用传统配置模式"
         echo ""
     fi
-
-
 }
 
-# 智能显示转发目标地址（处理本地地址和多地址）
+# 显示转发目标地址（处理本地地址和多地址）
 smart_display_target() {
     local target="$1"
 
@@ -6304,7 +6002,7 @@ smart_display_target() {
     fi
 }
 
-# 显示简要状态信息（快速版本，避免网络请求）
+# 显示简要状态信息（避免网络请求）
 show_brief_status() {
     echo ""
     echo -e "${BLUE}=== 当前状态 ===${NC}"
@@ -6445,7 +6143,6 @@ show_brief_status() {
             done
         fi
     else
-        # 没有启用的规则
         echo -e "转发规则: ${YELLOW}暂无${NC} (可通过 '转发配置管理' 添加)"
     fi
     echo ""
@@ -6488,7 +6185,6 @@ get_security_display() {
     esac
 }
 
-# 获取GMT+8时间
 get_gmt8_time() {
     TZ='GMT-8' date "$@"
 }
@@ -6500,10 +6196,8 @@ download_failover_script() {
 
     echo -e "${GREEN}正在下载最新故障转移脚本...${NC}"
 
-    # 创建目录
     mkdir -p "$(dirname "$target_path")"
 
-    # 使用统一多源下载函数
     if download_from_sources "$script_url" "$target_path"; then
         chmod +x "$target_path"
         return 0
@@ -6520,10 +6214,8 @@ download_speedtest_script() {
 
     echo -e "${GREEN}正在下载最新测速脚本...${NC}"
 
-    # 创建目录
     mkdir -p "$(dirname "$target_path")"
 
-    # 使用统一多源下载函数
     if download_from_sources "$script_url" "$target_path"; then
         chmod +x "$target_path"
         return 0
@@ -6536,19 +6228,16 @@ download_speedtest_script() {
 speedtest_menu() {
     local speedtest_script="/etc/realm/speedtest.sh"
 
-    # 每次都下载最新版本
     if ! download_speedtest_script; then
         echo -e "${RED}无法下载测速脚本，功能暂时不可用${NC}"
         read -p "按回车键返回主菜单..."
         return 1
     fi
 
-    # 调用测速脚本
     echo -e "${BLUE}启动测速工具...${NC}"
     echo ""
     bash "$speedtest_script"
 
-    # 返回后暂停
     echo ""
     read -p "按回车键返回主菜单..."
 }
@@ -6574,10 +6263,8 @@ download_port_traffic_dog_script() {
 
     echo -e "${GREEN}正在下载最新版端口流量狗脚本...${NC}"
 
-    # 创建目录
     mkdir -p "$(dirname "$target_path")"
 
-    # 使用统一多源下载函数
     if download_from_sources "$script_url" "$target_path"; then
         chmod +x "$target_path"
         return 0
@@ -6587,28 +6274,24 @@ download_port_traffic_dog_script() {
     fi
 }
 
-# 端口流量狗菜单
+# 端口流量狗
 port_traffic_dog_menu() {
     local dog_script="/usr/local/bin/port-traffic-dog.sh"
 
-    # 每次都下载最新版本
     if ! download_port_traffic_dog_script; then
         echo -e "${RED}无法下载端口流量狗脚本，功能暂时不可用${NC}"
         read -p "按回车键返回主菜单..."
         return 1
     fi
 
-    # 调用端口流量狗脚本
     echo -e "${BLUE}启动端口流量狗...${NC}"
     echo ""
     bash "$dog_script"
 
-    # 返回后暂停
     echo ""
     read -p "按回车键返回主菜单..."
 }
 
-# 可视化菜单界面
 show_menu() {
     while true; do
         clear
@@ -6618,7 +6301,6 @@ show_menu() {
         echo -e "${GREEN}一个开箱即用、轻量可靠、灵活可控的 Realm 转发管理工具${NC}"
         echo -e "${GREEN}官方realm的全部功能+故障转移 | 快捷命令: pf${NC}"
 
-        # 显示当前状态
         show_brief_status
 
         echo "请选择操作:"
@@ -6685,30 +6367,21 @@ show_menu() {
     done
 }
 
-# 统一文件大小清理函数
-cleanup_file_by_size() {
-    local file="$1"
-    local max_mb="${2:-10}"
-    local keep_mb="${3:-5}"
-
-    [ ! -f "$file" ] && return
-    local size=$(stat -c%s "$file" 2>/dev/null || echo 0)
-    [ "$size" -le $((max_mb * 1024 * 1024)) ] && return
-
-    tail -c $((keep_mb * 1024 * 1024)) "$file" > "$file.tmp" && mv "$file.tmp" "$file" 2>/dev/null
-}
-
 # 内置清理机制
 cleanup_temp_files() {
-    # 统一按大小清理所有文件（10MB清理，保留5MB）
-    cleanup_file_by_size "/etc/realm/health/health_status.conf" 10 5
-    cleanup_file_by_size "/tmp/realm_path_cache" 10 5
-    cleanup_file_by_size "/tmp/xwPF_script_locations_cache" 10 5
+    # 清理缓存文件（>10MB截断保留5MB）
+    local cache_file="/tmp/realm_path_cache"
+    if [ -f "$cache_file" ]; then
+        local size=$(stat -c%s "$cache_file" 2>/dev/null || echo 0)
+        if [ "$size" -gt 10485760 ]; then
+            tail -c 5242880 "$cache_file" > "$cache_file.tmp" && mv "$cache_file.tmp" "$cache_file" 2>/dev/null
+        fi
+    fi
 
-    # 清理过期标记文件
+    # 清理过期标记文件（>5分钟）
     find /tmp -name "realm_config_update_needed" -mmin +5 -delete 2>/dev/null
 
-    # 清理realm临时文件
+    # 清理realm临时文件（>60分钟）
     find /tmp -name "*realm*" -type f -mmin +60 ! -path "*/realm/config*" ! -path "*/realm/rules*" -delete 2>/dev/null
 }
 
@@ -6716,11 +6389,6 @@ cleanup_temp_files() {
 main() {
     # 内置清理：启动时清理临时文件
     cleanup_temp_files
-
-    # 创建独立清理定时器（如果不存在）
-    if [ ! -f "/etc/systemd/system/realm-cleanup.timer" ]; then
-        create_simple_cleanup_timer
-    fi
 
     # 检查特殊参数
     if [ "$1" = "--generate-config-only" ]; then
@@ -6745,37 +6413,6 @@ main() {
             show_menu
             ;;
     esac
-}
-
-# 创建最简单的文件清理定时器
-create_simple_cleanup_timer() {
-    # 创建清理定时器（每小时清理一次）
-    cat > "/etc/systemd/system/realm-cleanup.timer" << 'EOF'
-[Unit]
-Description=Realm File Cleanup Timer
-
-[Timer]
-OnBootSec=10min
-OnUnitActiveSec=1h
-
-[Install]
-WantedBy=timers.target
-EOF
-
-    # 创建清理服务
-    cat > "/etc/systemd/system/realm-cleanup.service" << 'EOF'
-[Unit]
-Description=Realm File Cleanup Service
-
-[Service]
-Type=oneshot
-ExecStart=/bin/bash -c 'for f in /etc/realm/health/health_status.conf /tmp/realm_path_cache /tmp/xwPF_script_locations_cache; do [ -f "$f" ] && [ $(stat -c%%s "$f" 2>/dev/null || echo 0) -gt 10485760 ] && tail -c 5242880 "$f" > "$f.tmp" && mv "$f.tmp" "$f" 2>/dev/null; done; find /tmp -name "*realm*" -mmin +60 -delete 2>/dev/null'
-EOF
-
-    # 启用定时器
-    systemctl daemon-reload
-    systemctl enable realm-cleanup.timer >/dev/null 2>&1
-    systemctl start realm-cleanup.timer >/dev/null 2>&1
 }
 
 
@@ -6955,7 +6592,6 @@ configure_port_group_weights() {
         return
     fi
 
-    # 验证权重输入
     if ! validate_weight_input "$weight_input" "$target_count"; then
         read -p "按回车键返回..."
         return
@@ -7153,7 +6789,6 @@ apply_port_group_weight_config() {
         echo -e "${GREEN}✓ 已更新 $updated_count 个规则文件的权重配置${NC}"
         echo -e "${YELLOW}正在重启服务以应用更改...${NC}"
 
-        # 重启realm服务
         if service_restart; then
             echo -e "${GREEN}✓ 服务重启成功，权重配置已生效${NC}"
         else
