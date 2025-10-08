@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SCRIPT_VERSION="v2.1.4"
+SCRIPT_VERSION="v2.1.5"
 REALM_VERSION="v2.9.2"
 
 NAT_LISTEN_PORT=""
@@ -1108,15 +1108,12 @@ display_single_rule_info() {
                 local target_port="${FORWARD_TARGET##*:}"
                 local display_target=$(smart_display_target "$target_host")
                 local rule_display_name="$RULE_NAME"
-                local balance_info=""
-                echo -e "  ID ${BLUE}$RULE_ID${NC}: ${GREEN}$rule_display_name${NC} ($LISTEN_PORT → $display_target:$target_port) [${status_color}$status_text${NC}]$balance_info"
+                echo -e "  ID ${BLUE}$RULE_ID${NC}: ${GREEN}$rule_display_name${NC} ($LISTEN_PORT → $display_target:$target_port) [${status_color}$status_text${NC}]"
             else
                 local display_target=$(smart_display_target "$REMOTE_HOST")
                 local rule_display_name="$RULE_NAME"
-                local balance_mode="${BALANCE_MODE:-off}"
-                local balance_info=$(get_balance_info_display "$REMOTE_HOST" "$balance_mode")
                 local through_display="${THROUGH_IP:-::}"
-                echo -e "  ID ${BLUE}$RULE_ID${NC}: ${GREEN}$rule_display_name${NC} ($LISTEN_PORT → $through_display → $display_target:$REMOTE_PORT) [${status_color}$status_text${NC}]$balance_info"
+                echo -e "  ID ${BLUE}$RULE_ID${NC}: ${GREEN}$rule_display_name${NC} ($LISTEN_PORT → $through_display → $display_target:$REMOTE_PORT) [${status_color}$status_text${NC}]"
             fi
             return 0
             ;;
@@ -1181,6 +1178,203 @@ list_all_rules() {
     done
 
     echo -e "${BLUE}共找到 $count 个配置${NC}"
+}
+
+# 编辑现有规则
+edit_rule_interactive() {
+    echo -e "${YELLOW}=== 编辑配置 ===${NC}"
+    echo ""
+    
+    if ! list_rules_with_info "management"; then
+        read -p "按回车键返回..."
+        return 1
+    fi
+    
+    echo ""
+    read -p "请输入要编辑的规则ID: " rule_id
+    
+    if [ -z "$rule_id" ]; then
+        echo -e "${RED}未输入规则ID${NC}"
+        read -p "按回车键返回..."
+        return 1
+    fi
+    
+    if ! [[ "$rule_id" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}无效的规则ID${NC}"
+        read -p "按回车键返回..."
+        return 1
+    fi
+    
+    local rule_file="${RULES_DIR}/rule-${rule_id}.conf"
+    if [ ! -f "$rule_file" ]; then
+        echo -e "${RED}规则 $rule_id 不存在${NC}"
+        read -p "按回车键返回..."
+        return 1
+    fi
+    
+    if ! read_rule_file "$rule_file"; then
+        echo -e "${RED}无法读取规则文件${NC}"
+        read -p "按回车键返回..."
+        return 1
+    fi
+    
+    echo ""
+    echo -e "${GREEN}正在编辑规则: $RULE_NAME (ID: $rule_id)${NC}"
+    echo ""
+    
+    if [ "$RULE_ROLE" = "1" ]; then
+        edit_nat_server_config "$rule_file"
+    elif [ "$RULE_ROLE" = "2" ]; then
+        edit_exit_server_config "$rule_file"
+    fi
+    
+    if [ $? -eq 0 ]; then
+        echo -e "${YELLOW}正在重启服务以应用配置更改...${NC}"
+        service_restart
+    fi
+    
+    read -p "按回车键返回..."
+}
+
+# 编辑中转服务器配置
+edit_nat_server_config() {
+    local rule_file="$1"
+    read_rule_file "$rule_file"
+    
+    echo -e "${YELLOW}=== 编辑中转服务器配置 ===${NC}"
+    echo ""
+    
+    local new_listen_port
+    while true; do
+        echo -ne "请输入本地监听端口 (客户端连接的端口，回车默认${GREEN}${LISTEN_PORT}${NC}): "
+        read new_listen_port
+        if [ -z "$new_listen_port" ]; then
+            new_listen_port="$LISTEN_PORT"
+            break
+        fi
+        if validate_port "$new_listen_port"; then
+            break
+        else
+            echo -e "${RED}无效端口号${NC}"
+        fi
+    done
+    
+    local new_listen_ip
+    echo -ne "自定义(指定)入口监听IP地址(客户端连接IP,回车默认${GREEN}${LISTEN_IP:-::}${NC}): "
+    read new_listen_ip
+    if [ -z "$new_listen_ip" ]; then
+        new_listen_ip="${LISTEN_IP:-::}"
+    elif ! validate_ip "$new_listen_ip"; then
+        echo -e "${RED}无效IP地址，保持原值${NC}"
+        new_listen_ip="${LISTEN_IP:-::}"
+    fi
+    
+    local new_through_ip
+    echo -ne "自定义(指定)出口IP地址(适用于中转多IP出口情况,回车默认${GREEN}${THROUGH_IP:-::}${NC}): "
+    read new_through_ip
+    if [ -z "$new_through_ip" ]; then
+        new_through_ip="${THROUGH_IP:-::}"
+    elif ! validate_ip "$new_through_ip"; then
+        echo -e "${RED}无效IP地址，保持原值${NC}"
+        new_through_ip="${THROUGH_IP:-::}"
+    fi
+    
+    echo ""
+    echo -e "${YELLOW}=== 编辑出口服务器信息配置 ===${NC}"
+    
+    local new_remote_host
+    echo -ne "出口服务器的IP地址或域名(回车默认${GREEN}${REMOTE_HOST}${NC}): "
+    read new_remote_host
+    if [ -z "$new_remote_host" ]; then
+        new_remote_host="$REMOTE_HOST"
+    elif ! validate_single_address "$new_remote_host"; then
+        echo -e "${RED}无效地址，保持原值${NC}"
+        new_remote_host="$REMOTE_HOST"
+    fi
+    
+    local new_remote_port
+    while true; do
+        echo -ne "出口服务器的监听端口(回车默认${GREEN}${REMOTE_PORT}${NC}): "
+        read new_remote_port
+        if [ -z "$new_remote_port" ]; then
+            new_remote_port="$REMOTE_PORT"
+            break
+        fi
+        if validate_port "$new_remote_port"; then
+            break
+        else
+            echo -e "${RED}无效端口号${NC}"
+        fi
+    done
+    
+    sed -i "s/^LISTEN_PORT=.*/LISTEN_PORT=\"$new_listen_port\"/" "$rule_file"
+    sed -i "s|^LISTEN_IP=.*|LISTEN_IP=\"$new_listen_ip\"|" "$rule_file"
+    sed -i "s|^THROUGH_IP=.*|THROUGH_IP=\"$new_through_ip\"|" "$rule_file"
+    sed -i "s/^REMOTE_HOST=.*/REMOTE_HOST=\"$new_remote_host\"/" "$rule_file"
+    sed -i "s/^REMOTE_PORT=.*/REMOTE_PORT=\"$new_remote_port\"/" "$rule_file"
+    
+    echo ""
+    echo -e "${GREEN}✓ 配置已更新${NC}"
+    return 0
+}
+
+# 编辑落地服务器配置
+edit_exit_server_config() {
+    local rule_file="$1"
+    read_rule_file "$rule_file"
+    
+    echo -e "${YELLOW}=== 编辑解密并转发服务器配置 (双端Realm架构) ===${NC}"
+    echo ""
+    
+    local new_listen_port
+    while true; do
+        echo -ne "请输入监听端口 (回车默认${GREEN}${LISTEN_PORT}${NC}): "
+        read new_listen_port
+        if [ -z "$new_listen_port" ]; then
+            new_listen_port="$LISTEN_PORT"
+            break
+        fi
+        if validate_port "$new_listen_port"; then
+            break
+        else
+            echo -e "${RED}无效端口号${NC}"
+        fi
+    done
+    
+    local current_target_host="${FORWARD_TARGET%:*}"
+    local current_target_port="${FORWARD_TARGET##*:}"
+    
+    local new_target_host
+    echo -ne "转发目标IP地址(回车默认${GREEN}${current_target_host}${NC}): "
+    read new_target_host
+    if [ -z "$new_target_host" ]; then
+        new_target_host="$current_target_host"
+    elif ! validate_target_address "$new_target_host"; then
+        echo -e "${RED}无效地址，保持原值${NC}"
+        new_target_host="$current_target_host"
+    fi
+    
+    local new_target_port
+    while true; do
+        echo -ne "转发目标业务端口(回车默认${GREEN}${current_target_port}${NC}): "
+        read new_target_port
+        if [ -z "$new_target_port" ]; then
+            new_target_port="$current_target_port"
+            break
+        fi
+        if validate_port "$new_target_port"; then
+            break
+        else
+            echo -e "${RED}无效端口号${NC}"
+        fi
+    done
+    
+    sed -i "s/^LISTEN_PORT=.*/LISTEN_PORT=\"$new_listen_port\"/" "$rule_file"
+    sed -i "s|^FORWARD_TARGET=.*|FORWARD_TARGET=\"${new_target_host}:${new_target_port}\"|" "$rule_file"
+    
+    echo ""
+    echo -e "${GREEN}✓ 配置已更新${NC}"
+    return 0
 }
 
 interactive_add_rule() {
@@ -1875,15 +2069,16 @@ rules_management_menu() {
         echo "请选择操作:"
         echo -e "${GREEN}1.${NC} 一键导出/导入配置"
         echo -e "${GREEN}2.${NC} 添加新配置"
-        echo -e "${GREEN}3.${NC} 删除配置"
-        echo -e "${GREEN}4.${NC} 启用/禁用中转规则"
-        echo -e "${BLUE}5.${NC} 负载均衡管理"
-        echo -e "${YELLOW}6.${NC} 开启/关闭 MPTCP"
-        echo -e "${CYAN}7.${NC} 开启/关闭 Proxy Protocol"
+        echo -e "${GREEN}3.${NC} 编辑现有规则"
+        echo -e "${GREEN}4.${NC} 删除配置"
+        echo -e "${GREEN}5.${NC} 启用/禁用中转规则"
+        echo -e "${BLUE}6.${NC} 负载均衡管理"
+        echo -e "${YELLOW}7.${NC} 开启/关闭 MPTCP"
+        echo -e "${CYAN}8.${NC} 开启/关闭 Proxy Protocol"
         echo -e "${GREEN}0.${NC} 返回主菜单"
         echo ""
 
-        read -p "请输入选择 [0-7]: " choice
+        read -p "请输入选择 [0-8]: " choice
         echo ""
 
         case $choice in
@@ -1930,6 +2125,9 @@ rules_management_menu() {
                 read -p "按回车键继续..."
                 ;;
             3)
+                edit_rule_interactive
+                ;;
+            4)
                 echo -e "${YELLOW}=== 删除配置 ===${NC}"
                 echo ""
                 if list_rules_with_info "management"; then
@@ -1957,7 +2155,7 @@ rules_management_menu() {
                 fi
                 read -p "按回车键继续..."
                 ;;
-            4)
+            5)
                 echo -e "${YELLOW}=== 启用/禁用中转规则 ===${NC}"
                 echo ""
                 if list_rules_with_info "management"; then
@@ -1975,20 +2173,20 @@ rules_management_menu() {
                 fi
                 read -p "按回车键继续..."
                 ;;
-            5)
+            6)
                 load_balance_management_menu
                 ;;
-            6)
+            7)
                 mptcp_management_menu
                 ;;
-            7)
+            8)
                 proxy_management_menu
                 ;;
             0)
                 break
                 ;;
             *)
-                echo -e "${RED}无效选择，请输入 0-7${NC}"
+                echo -e "${RED}无效选择，请输入 0-8${NC}"
                 read -p "按回车键继续..."
                 ;;
         esac
