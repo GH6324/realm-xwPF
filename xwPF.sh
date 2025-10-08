@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SCRIPT_VERSION="v2.1.5"
+SCRIPT_VERSION="v2.1.6"
 REALM_VERSION="v2.9.2"
 
 NAT_LISTEN_PORT=""
@@ -6454,38 +6454,26 @@ failover_management_menu() {
     bash "$failover_script" toggle
 }
 
-# 下载端口流量狗脚本
-download_port_traffic_dog_script() {
-    local script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/port-traffic-dog.sh"
-    local target_path="/usr/local/bin/port-traffic-dog.sh"
-
-    echo -e "${GREEN}正在下载最新版端口流量狗脚本...${NC}"
-
-    mkdir -p "$(dirname "$target_path")"
-
-    if download_from_sources "$script_url" "$target_path"; then
-        chmod +x "$target_path"
-        return 0
-    else
-        echo -e "${RED}请检查网络连接${NC}"
-        return 1
-    fi
-}
-
 # 端口流量狗
 port_traffic_dog_menu() {
+    local script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/port-traffic-dog.sh"
     local dog_script="/usr/local/bin/port-traffic-dog.sh"
 
-    if ! download_port_traffic_dog_script; then
-        echo -e "${RED}无法下载端口流量狗脚本，功能暂时不可用${NC}"
-        read -p "按回车键返回主菜单..."
-        return 1
+    # 脚本不存在或不可执行时才下载
+    if [[ ! -f "$dog_script" || ! -x "$dog_script" ]]; then
+        echo -e "${GREEN}正在下载端口流量狗脚本...${NC}"
+        mkdir -p "$(dirname "$dog_script")"
+        if ! download_from_sources "$script_url" "$dog_script"; then
+            echo -e "${RED}无法下载端口流量狗脚本，请检查网络连接${NC}"
+            read -p "按回车键返回主菜单..."
+            return 1
+        fi
+        chmod +x "$dog_script"
     fi
 
     echo -e "${BLUE}启动端口流量狗...${NC}"
     echo ""
     bash "$dog_script"
-
     echo ""
     read -p "按回车键返回主菜单..."
 }
