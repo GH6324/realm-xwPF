@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-readonly SCRIPT_VERSION="1.2.2"
+readonly SCRIPT_VERSION="1.2.3"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -602,7 +602,13 @@ get_port_status_label() {
     local rate_limit=$(echo "$port_config" | jq -r '.bandwidth_limit.rate // "unlimited"')
     local quota_enabled=$(echo "$port_config" | jq -r '.quota.enabled // true')
     local monthly_limit=$(echo "$port_config" | jq -r '.quota.monthly_limit // "unlimited"')
-    local reset_day=$(echo "$port_config" | jq -r '.quota.reset_day // 1')
+    local reset_day_raw=$(echo "$port_config" | jq -r '.quota.reset_day')
+    local reset_day="null"
+    
+    # 有流量限额时，获取重置日期（null表示用户取消了自动重置）
+    if [ "$monthly_limit" != "unlimited" ] && [ "$reset_day_raw" != "null" ]; then
+        reset_day="${reset_day_raw:-1}"  # 未配置时默认为1
+    fi
 
     local status_tags=()
 
@@ -616,28 +622,29 @@ get_port_status_label() {
             local limit_bytes=$(parse_size_to_bytes "$monthly_limit")
             local usage_percent=$((current_usage * 100 / limit_bytes))
 
-            local time_info=($(get_beijing_month_year))
-            local current_day=${time_info[0]}
-            local current_month=${time_info[1]}
-            local current_year=${time_info[2]}
-            local next_month=$current_month
-            local next_year=$current_year
-
-            if [ $current_day -ge $reset_day ]; then
-                next_month=$((current_month + 1))
-                if [ $next_month -gt 12 ]; then
-                    next_month=1
-                    next_year=$((current_year + 1))
-                fi
-            fi
-
             local quota_display="$monthly_limit"
             if [ "$billing_mode" = "double" ]; then
                 status_tags+=("[双向${quota_display}]")
             else
                 status_tags+=("[单向${quota_display}]")
             fi
-            status_tags+=("[${next_month}月${reset_day}日重置]")
+            
+            # 只有配置了reset_day时才显示重置日期信息
+            if [ "$reset_day" != "null" ]; then
+                local time_info=($(get_beijing_month_year))
+                local current_day=${time_info[0]}
+                local current_month=${time_info[1]}
+                local next_month=$current_month
+
+                if [ $current_day -ge $reset_day ]; then
+                    next_month=$((current_month + 1))
+                    if [ $next_month -gt 12 ]; then
+                        next_month=1
+                    fi
+                fi
+                
+                status_tags+=("[${next_month}月${reset_day}日重置]")
+            fi
 
             if [ $usage_percent -ge 100 ]; then
                 status_tags+=("[已超限]")
@@ -1036,10 +1043,24 @@ add_port_monitoring() {
 
         local quota_enabled="true"
         local monthly_limit="unlimited"
-        local reset_day=1
 
         if [ "$quota" != "0" ] && [ -n "$quota" ]; then
             monthly_limit="$quota"
+        fi
+
+        # 只有设置了流量限额时才添加reset_day字段（默认为1）
+        local quota_config
+        if [ "$monthly_limit" != "unlimited" ]; then
+            quota_config="{
+                \"enabled\": $quota_enabled,
+                \"monthly_limit\": \"$monthly_limit\",
+                \"reset_day\": 1
+            }"
+        else
+            quota_config="{
+                \"enabled\": $quota_enabled,
+                \"monthly_limit\": \"$monthly_limit\"
+            }"
         fi
 
         local port_config="{
@@ -1050,11 +1071,7 @@ add_port_monitoring() {
                 \"enabled\": false,
                 \"rate\": \"unlimited\"
             },
-            \"quota\": {
-                \"enabled\": $quota_enabled,
-                \"monthly_limit\": \"$monthly_limit\",
-                \"reset_day\": $reset_day
-            },
+            \"quota\": $quota_config,
             \"remark\": \"$remark\",
             \"created_at\": \"$(get_beijing_time -Iseconds)\"
         }"
@@ -1451,8 +1468,11 @@ set_port_quota_limit() {
 
         if [ "$quota" = "0" ] || [ -z "$quota" ]; then
             remove_nftables_quota "$port"
-            update_config ".ports.\"$port\".quota.enabled = true |
-                .ports.\"$port\".quota.monthly_limit = \"unlimited\""
+            # 设为无限额时删除reset_day字段并清除定时任务
+            jq ".ports.\"$port\".quota.enabled = true | 
+                .ports.\"$port\".quota.monthly_limit = \"unlimited\" | 
+                del(.ports.\"$port\".quota.reset_day)" "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+            remove_port_auto_reset_cron "$port"
             echo -e "${GREEN}端口 $port 流量配额设置为无限制${NC}"
             success_count=$((success_count + 1))
             continue
@@ -1461,9 +1481,22 @@ set_port_quota_limit() {
         remove_nftables_quota "$port"
         apply_nftables_quota "$port" "$quota"
 
-        update_config ".ports.\"$port\".quota.enabled = true |
-            .ports.\"$port\".quota.monthly_limit = \"$quota\""
-
+        # 获取当前配额限制状态
+        local current_monthly_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE")
+        
+        # 从无限额改为有限额时默认添加reset_day=1
+        if [ "$current_monthly_limit" = "unlimited" ]; then
+            # 原来是无限额，现在设置为有限额，添加默认reset_day=1
+            update_config ".ports.\"$port\".quota.enabled = true |
+                .ports.\"$port\".quota.monthly_limit = \"$quota\" |
+                .ports.\"$port\".quota.reset_day = 1"
+        else
+            # 原来就是有限额，只修改配额值，保持reset_day不变
+            update_config ".ports.\"$port\".quota.enabled = true |
+                .ports.\"$port\".quota.monthly_limit = \"$quota\""
+        fi
+        
+        setup_port_auto_reset_cron "$port"
         echo -e "${GREEN}端口 $port 流量配额设置成功: $quota${NC}"
         success_count=$((success_count + 1))
     done
@@ -1735,9 +1768,9 @@ set_reset_day() {
     echo
     local port_list=$(IFS=','; echo "${ports_to_set[*]}")
     echo "为端口 $port_list 设置月重置日期:"
-    echo "请输入月重置日（多端口使用逗号,分隔）:"
+    echo "请输入月重置日（多端口使用逗号,分隔）(0代表不重置):"
     echo "(只输入一个值，应用到所有端口):"
-    read -p "月重置日 [1-31]: " reset_day_input
+    read -p "月重置日 [0-31]: " reset_day_input
 
     local RESET_DAYS=()
     parse_comma_separated_input "$reset_day_input" RESET_DAYS
@@ -1755,15 +1788,22 @@ set_reset_day() {
         local port="${ports_to_set[$i]}"
         local reset_day=$(echo "${RESET_DAYS[$i]}" | tr -d ' ')
 
-        if ! [[ "$reset_day" =~ ^[0-9]+$ ]] || [ "$reset_day" -lt 1 ] || [ "$reset_day" -gt 31 ]; then
-            echo -e "${RED}端口 $port 重置日期无效: $reset_day，必须是1-31之间的数字${NC}"
+        if ! [[ "$reset_day" =~ ^[0-9]+$ ]] || [ "$reset_day" -lt 0 ] || [ "$reset_day" -gt 31 ]; then
+            echo -e "${RED}端口 $port 重置日期无效: $reset_day，必须是0-31之间的数字${NC}"
             continue
         fi
 
-        update_config ".ports.\"$port\".quota.reset_day = $reset_day"
-        setup_port_auto_reset_cron "$port"
-
-        echo -e "${GREEN}端口 $port 月重置日设置成功: 每月${reset_day}日${NC}"
+        if [ "$reset_day" = "0" ]; then
+            # 删除reset_day字段并移除定时任务
+            jq "del(.ports.\"$port\".quota.reset_day)" "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+            remove_port_auto_reset_cron "$port"
+            echo -e "${GREEN}端口 $port 已取消自动重置${NC}"
+        else
+            update_config ".ports.\"$port\".quota.reset_day = $reset_day"
+            setup_port_auto_reset_cron "$port"
+            echo -e "${GREEN}端口 $port 月重置日设置成功: 每月${reset_day}日${NC}"
+        fi
+        
         success_count=$((success_count + 1))
     done
 
@@ -2485,8 +2525,11 @@ setup_port_auto_reset_cron() {
 
     local quota_enabled=$(jq -r ".ports.\"$port\".quota.enabled // true" "$CONFIG_FILE")
     local monthly_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE")
-    if [ "$quota_enabled" = "true" ] && [ "$monthly_limit" != "unlimited" ]; then
-        local reset_day=$(jq -r ".ports.\"$port\".quota.reset_day // 1" "$CONFIG_FILE")
+    local reset_day_raw=$(jq -r ".ports.\"$port\".quota.reset_day" "$CONFIG_FILE")
+    
+    # 只有quota启用、monthly_limit不是unlimited、且reset_day存在时才添加cron任务
+    if [ "$quota_enabled" = "true" ] && [ "$monthly_limit" != "unlimited" ] && [ "$reset_day_raw" != "null" ]; then
+        local reset_day="${reset_day_raw:-1}"
         echo "5 0 $reset_day * * $script_path --reset-port $port >/dev/null 2>&1  # 端口流量狗自动重置端口$port" >> "$temp_cron"
     fi
 
