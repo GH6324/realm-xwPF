@@ -22,11 +22,11 @@ generate_rule_id() {
     echo $((existing_count + 1))
 }
 
-# 配置路径定义（与主脚本保持一致）
+# 配置路径定义
 CONFIG_DIR="/etc/realm"
 RULES_DIR="${CONFIG_DIR}/rules"
 
-# 默认SNI域名（与主脚本保持一致）
+# 默认SNI域名
 DEFAULT_SNI_DOMAIN="www.tesla.com"
 
 # 检查参数
@@ -398,38 +398,47 @@ RULE_EOF
 # 处理TOML格式
 process_toml() {
     local toml_file="$1"
+    local temp_json="/tmp/realm_toml_$$.json"
 
-    # 检查是否有toml转json的工具
-    if command -v toml2json >/dev/null 2>&1; then
-        local temp_json="/tmp/realm_toml_$$.json"
-        toml2json "$toml_file" > "$temp_json"
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "需要Python3转换TOML格式或手动转换成json格式"
+        return 1
+    fi
+
+    python3 << 'EOF' "$toml_file" "$temp_json"
+import sys, json
+toml_file, json_file = sys.argv[1], sys.argv[2]
+
+try:
+    import tomllib
+    with open(toml_file, 'rb') as f:
+        data = tomllib.load(f)
+except ImportError:
+    try:
+        import toml
+        with open(toml_file, 'r') as f:
+            data = toml.load(f)
+    except ImportError:
+        try:
+            import tomli
+            with open(toml_file, 'rb') as f:
+                data = tomli.load(f)
+        except ImportError:
+            print("错误: 缺少TOML库,请安装: pip3 install tomli", file=sys.stderr)
+            sys.exit(1)
+
+with open(json_file, 'w') as f:
+    json.dump(data, f)
+EOF
+
+    if [ $? -eq 0 ]; then
         process_json "$temp_json"
         local result=$?
         rm -f "$temp_json"
         return $result
-    elif command -v python3 >/dev/null 2>&1; then
-        # 尝试使用python转换
-        local temp_json="/tmp/realm_toml_$$.json"
-        python3 -c "
-import toml, json, sys
-try:
-    with open('$toml_file', 'r') as f:
-        data = toml.load(f)
-    with open('$temp_json', 'w') as f:
-        json.dump(data, f)
-except Exception as e:
-    print(f'TOML转换失败: {e}')
-    sys.exit(1)
-" 2>/dev/null
-        if [ $? -eq 0 ]; then
-            process_json "$temp_json"
-            local result=$?
-            rm -f "$temp_json"
-            return $result
-        fi
     fi
 
-    echo "错误: 暂不支持TOML格式，请转换为JSON格式后重试"
+    rm -f "$temp_json"
     return 1
 }
 
