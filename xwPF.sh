@@ -6806,14 +6806,14 @@ weight_management_menu() {
 
         for rule_file in "${RULES_DIR}"/rule-*.conf; do
             if [ -f "$rule_file" ]; then
-                if read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$BALANCE_MODE" != "off" ]; then
+                if read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ]; then
                     local port_key="$LISTEN_PORT"
 
                     # 存储端口配置（优先使用包含完整权重的规则）
                     if [ -z "${port_configs[$port_key]}" ]; then
                         port_configs[$port_key]="$RULE_NAME"
                         port_weights[$port_key]="$WEIGHTS"
-                        port_balance_modes[$port_key]="$BALANCE_MODE"
+                        port_balance_modes[$port_key]="${BALANCE_MODE:-off}"
                     elif [[ "$WEIGHTS" == *","* ]] && [[ "${port_weights[$port_key]}" != *","* ]]; then
                         # 如果当前规则有完整权重而已存储的没有，更新为完整权重
                         port_weights[$port_key]="$WEIGHTS"
@@ -6859,20 +6859,20 @@ weight_management_menu() {
             # 计算目标服务器总数
             IFS=',' read -ra targets <<< "${port_groups[$port_key]}"
             local target_count=${#targets[@]}
+            local balance_mode="${port_balance_modes[$port_key]}"
 
             # 只显示有多个目标服务器的端口组
-            if [ "$target_count" -gt 1 ]; then
+            if [ "$target_count" -gt 1 ] && [ "$balance_mode" != "off" ] && [ -n "$balance_mode" ]; then
                 if [ "$has_balance_rules" = false ]; then
                     echo "请选择要配置权重的规则组 (仅显示多目标服务器的负载均衡规则):"
                     has_balance_rules=true
                 fi
 
-                # 使用数字ID
+                # 数字ID
                 local rule_number=$((${#rule_ports[@]} + 1))
                 rule_ports+=("$port_key")
                 rule_names+=("${port_configs[$port_key]}")
 
-                local balance_mode="${port_balance_modes[$port_key]}"
                 echo -e "${GREEN}$rule_number.${NC} ${port_configs[$port_key]} (端口: $port_key) [$balance_mode] - $target_count个目标服务器"
             fi
         done
