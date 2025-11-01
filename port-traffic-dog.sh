@@ -16,12 +16,12 @@ readonly BLUE='\033[0;34m'
 readonly GREEN='\033[0;32m'
 readonly NC='\033[0m'
 
-# 多源下载策略：官方源失败时自动切换到镜像源
+# 多源下载策略
 readonly DOWNLOAD_SOURCES=(
     ""
     "https://ghfast.top/"
-    "https://gh.222322.xyz/"
-    "https://ghproxy.gpnu.org/"
+    "https://free.cn.eu.org/"
+    "https://ghproxy.net/"
 )
 
 # 网络超时设置

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SCRIPT_VERSION="v2.1.6"
+SCRIPT_VERSION="v2.1.7"
 REALM_VERSION="v2.9.2"
 
 NAT_LISTEN_PORT=""
@@ -66,12 +66,12 @@ BLUE='\033[0;34m'
 WHITE='\033[1;37m'
 NC='\033[0m'
 
-# 多源下载策略：官方源优先，镜像源作为容错备选
+# 多源下载策略
 DOWNLOAD_SOURCES=(
     ""
     "https://ghfast.top/"
-    "https://gh.222322.xyz/"
-    "https://ghproxy.gpnu.org/"
+    "https://free.cn.eu.org/"
+    "https://ghproxy.net/"
 )
 
 # 网络超时设计：短超时用于快速失败，长超时用于重要操作
@@ -1236,6 +1236,74 @@ edit_rule_interactive() {
     read -p "按回车键返回..."
 }
 
+# 从TARGET_STATES移除指定目标，保持目标与权重的索引对应关系
+# 格式: "new_target_states|new_weights"
+remove_target_from_states() {
+    local original_states="$1"
+    local target_to_remove="$2"
+    local original_weights="$3"
+
+    local new_target_states=""
+    local new_weights=""
+
+    IFS=',' read -ra targets <<< "$original_states"
+    IFS=',' read -ra weight_array <<< "$original_weights"
+
+    for i in "${!targets[@]}"; do
+        if [ "${targets[i]}" != "$target_to_remove" ]; then
+            local weight="${weight_array[i]:-1}"
+
+            if [ -z "$new_target_states" ]; then
+                new_target_states="${targets[i]}"
+                new_weights="$weight"
+            else
+                new_target_states="$new_target_states,${targets[i]}"
+                new_weights="$new_weights,$weight"
+            fi
+        fi
+    done
+
+    echo "$new_target_states|$new_weights"
+}
+
+# 同步更新同端口负载均衡组的所有规则
+sync_target_states_for_port() {
+    local port="$1"
+    local new_target_states="$2"
+    local new_weights="$3"
+    local rf
+
+    local updated_count=0
+
+    for rf in "${RULES_DIR}"/rule-*.conf; do
+        if [ -f "$rf" ]; then
+            if read_rule_file "$rf" && [ "$LISTEN_PORT" = "$port" ] && [ "$BALANCE_MODE" != "off" ]; then
+                sed -i "s|^TARGET_STATES=.*|TARGET_STATES=\"$new_target_states\"|" "$rf"
+                sed -i "s|^WEIGHTS=.*|WEIGHTS=\"$new_weights\"|" "$rf"
+                updated_count=$((updated_count + 1))
+            fi
+        fi
+    done
+
+    return $updated_count
+}
+
+# 降级单规则模式
+disable_balance_for_port() {
+    local port="$1"
+    local rf
+
+    for rf in "${RULES_DIR}"/rule-*.conf; do
+        if [ -f "$rf" ]; then
+            if read_rule_file "$rf" && [ "$LISTEN_PORT" = "$port" ]; then
+                sed -i "s/^BALANCE_MODE=.*/BALANCE_MODE=\"off\"/" "$rf"
+                sed -i "s|^TARGET_STATES=.*|TARGET_STATES=\"\"|" "$rf"
+                sed -i "s|^WEIGHTS=.*|WEIGHTS=\"\"|" "$rf"
+            fi
+        fi
+    done
+}
+
 # 编辑中转服务器配置
 edit_nat_server_config() {
     local rule_file="$1"
@@ -1307,12 +1375,85 @@ edit_nat_server_config() {
         fi
     done
     
+    # 保存原始值用于后续比较
+    local old_remote_host="$REMOTE_HOST"
+    local old_remote_port="$REMOTE_PORT"
+    local old_listen_port="$LISTEN_PORT"
+    local is_balance_mode=false
+
+    if [ "$BALANCE_MODE" != "off" ] && [ -n "$TARGET_STATES" ]; then
+        is_balance_mode=true
+    fi
+
+    # 更新基本字段
     sed -i "s/^LISTEN_PORT=.*/LISTEN_PORT=\"$new_listen_port\"/" "$rule_file"
     sed -i "s|^LISTEN_IP=.*|LISTEN_IP=\"$new_listen_ip\"|" "$rule_file"
     sed -i "s|^THROUGH_IP=.*|THROUGH_IP=\"$new_through_ip\"|" "$rule_file"
     sed -i "s/^REMOTE_HOST=.*/REMOTE_HOST=\"$new_remote_host\"/" "$rule_file"
     sed -i "s/^REMOTE_PORT=.*/REMOTE_PORT=\"$new_remote_port\"/" "$rule_file"
-    
+
+    # 如果是负载均衡模式，需要处理TARGET_STATES同步
+    if [ "$is_balance_mode" = true ]; then
+        local old_target="${old_remote_host}:${old_remote_port}"
+        local new_target="${new_remote_host}:${new_remote_port}"
+        local port_changed=false
+        local target_changed=false
+
+        if [ "$old_listen_port" != "$new_listen_port" ]; then
+            port_changed=true
+        fi
+
+        if [ "$old_target" != "$new_target" ]; then
+            target_changed=true
+        fi
+
+        # 端口变更,规则离开原负载均衡组
+        if [ "$port_changed" = true ]; then
+            echo ""
+            echo -e "${BLUE}检测到端口变更，正在处理负载均衡配置...${NC}"
+
+            local result=$(remove_target_from_states "$TARGET_STATES" "$old_target" "$WEIGHTS")
+            local new_target_states_for_old_port="${result%|*}"
+            local new_weights_for_old_port="${result#*|}"
+
+            local remaining_count=0
+            if [ -n "$new_target_states_for_old_port" ]; then
+                remaining_count=$(echo "$new_target_states_for_old_port" | tr ',' '\n' | grep -c .)
+            fi
+
+            if [ $remaining_count -le 1 ]; then
+                echo -e "${YELLOW}旧端口组只剩1个目标，自动关闭负载均衡模式${NC}"
+                disable_balance_for_port "$old_listen_port"
+            else
+                sync_target_states_for_port "$old_listen_port" "$new_target_states_for_old_port" "$new_weights_for_old_port"
+                local sync_count=$?
+                if [ $sync_count -gt 0 ]; then
+                    echo -e "${GREEN}✓ 已更新旧端口组 $old_listen_port 的 $sync_count 个规则${NC}"
+                fi
+            fi
+
+            # 规则变为独立规则，清空负载均衡配置
+            sed -i "s/^BALANCE_MODE=.*/BALANCE_MODE=\"off\"/" "$rule_file"
+            sed -i "s|^TARGET_STATES=.*|TARGET_STATES=\"\"|" "$rule_file"
+            sed -i "s|^WEIGHTS=.*|WEIGHTS=\"\"|" "$rule_file"
+            echo -e "${GREEN}✓ 当前规则已设为独立规则（端口 $new_listen_port）${NC}"
+
+        # 目标变更 - 同步更新负载均衡组
+        elif [ "$target_changed" = true ]; then
+            echo ""
+            echo -e "${BLUE}检测到负载均衡规则，正在同步更新相同端口的所有规则...${NC}"
+
+            local new_target_states="${TARGET_STATES//$old_target/$new_target}"
+
+            sync_target_states_for_port "$old_listen_port" "$new_target_states" "$WEIGHTS"
+            local sync_count=$?
+
+            if [ $sync_count -gt 0 ]; then
+                echo -e "${GREEN}✓ 已同步更新 $sync_count 个相同端口的规则${NC}"
+            fi
+        fi
+    fi
+
     echo ""
     echo -e "${GREEN}✓ 配置已更新${NC}"
     return 0
@@ -1482,11 +1623,28 @@ delete_rule() {
     fi
 
     if read_rule_file "$rule_file"; then
+        # 保存规则信息用于后续同步
+        local deleted_listen_port="$LISTEN_PORT"
+        local deleted_remote_host="$REMOTE_HOST"
+        local deleted_remote_port="$REMOTE_PORT"
+        local deleted_balance_mode="$BALANCE_MODE"
+        local deleted_target_states="$TARGET_STATES"
+        local deleted_weights="$WEIGHTS"
+        local is_balance_mode=false
+
+        if [ "$deleted_balance_mode" != "off" ] && [ -n "$deleted_target_states" ]; then
+            is_balance_mode=true
+        fi
+
         if [ "$skip_confirm" != "true" ]; then
             echo -e "${YELLOW}即将删除规则:${NC}"
             echo -e "${BLUE}规则ID: ${GREEN}$RULE_ID${NC}"
             echo -e "${BLUE}规则名称: ${GREEN}$RULE_NAME${NC}"
             echo -e "${BLUE}监听端口: ${GREEN}$LISTEN_PORT${NC}"
+
+            if [ "$is_balance_mode" = true ]; then
+                echo -e "${YELLOW}⚠️  此规则属于负载均衡组${NC}"
+            fi
             echo ""
 
             read -p "确认删除此规则？(y/n): " confirm
@@ -1498,6 +1656,35 @@ delete_rule() {
 
         if rm -f "$rule_file"; then
             echo -e "${GREEN}✓ 规则 $rule_id 已删除${NC}"
+
+            # 负载均衡组删除：同步更新剩余规则
+            if [ "$is_balance_mode" = true ]; then
+                echo ""
+                echo -e "${BLUE}正在同步更新负载均衡配置...${NC}"
+
+                local deleted_target="${deleted_remote_host}:${deleted_remote_port}"
+
+                local result=$(remove_target_from_states "$deleted_target_states" "$deleted_target" "$deleted_weights")
+                local new_target_states="${result%|*}"
+                local new_weights="${result#*|}"
+
+                local remaining_count=0
+                if [ -n "$new_target_states" ]; then
+                    remaining_count=$(echo "$new_target_states" | tr ',' '\n' | grep -c .)
+                fi
+
+                if [ $remaining_count -le 1 ]; then
+                    echo -e "${YELLOW}只剩1个目标，自动关闭负载均衡模式${NC}"
+                    disable_balance_for_port "$deleted_listen_port"
+                else
+                    sync_target_states_for_port "$deleted_listen_port" "$new_target_states" "$new_weights"
+                    local sync_count=$?
+
+                    if [ $sync_count -gt 0 ]; then
+                        echo -e "${GREEN}✓ 已同步更新 $sync_count 个相同端口的规则${NC}"
+                    fi
+                fi
+            fi
 
             if [ "$skip_confirm" != "true" ]; then
                 echo -e "${BLUE}正在规则排序...${NC}"
@@ -1588,7 +1775,7 @@ toggle_rule() {
             echo -e "${YELLOW}正在启用规则: $RULE_NAME${NC}"
         fi
 
-        sed -i "s/ENABLED=\".*\"/ENABLED=\"$new_status\"/" "$rule_file"
+        sed -i "s/^ENABLED=.*/ENABLED=\"$new_status\"/" "$rule_file"
 
         if [ "$new_status" = "true" ]; then
             echo -e "${GREEN}✓ 规则已启用${NC}"
@@ -3486,6 +3673,8 @@ load_balance_management_menu() {
                         port_balance_modes[$port_key]="${BALANCE_MODE:-off}"
                         port_weights[$port_key]="$WEIGHTS"
                         port_failover_status[$port_key]="${FAILOVER_ENABLED:-false}"
+                    elif [[ "$WEIGHTS" == *","* ]]; then
+                        port_weights[$port_key]="$WEIGHTS"
                     fi
 
                     if [[ "$REMOTE_HOST" == *","* ]]; then
@@ -3814,7 +4003,7 @@ switch_balance_mode() {
         for rule_file in "${RULES_DIR}"/rule-*.conf; do
             if [ -f "$rule_file" ]; then
                 if read_rule_file "$rule_file" && [ "$RULE_ROLE" = "1" ] && [ "$LISTEN_PORT" = "$selected_port" ]; then
-                    sed -i "s/BALANCE_MODE=\".*\"/BALANCE_MODE=\"$new_mode\"/" "$rule_file"
+                    sed -i "s/^BALANCE_MODE=.*/BALANCE_MODE=\"$new_mode\"/" "$rule_file"
                     updated_count=$((updated_count + 1))
                 fi
             fi
@@ -3988,7 +4177,7 @@ toggle_target_server() {
 
         if [[ "$confirm" =~ ^[Yy]$ ]]; then
             # 更新规则文件
-            sed -i "s/ENABLED=\".*\"/ENABLED=\"$new_status\"/" "$rule_file"
+            sed -i "s/^ENABLED=.*/ENABLED=\"$new_status\"/" "$rule_file"
             echo -e "${color}✓ 规则 $RULE_NAME 已${action_text}${NC}"
         else
             echo "操作已取消"

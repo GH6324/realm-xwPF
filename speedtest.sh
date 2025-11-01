@@ -9,14 +9,13 @@ BLUE='\033[0;34m'
 WHITE='\033[1;37m'
 NC='\033[0m'
 
-# 全局多源下载配置
+# 多源下载策略
 DOWNLOAD_SOURCES=(
     ""
-    "https://proxy.vvvv.ee/"
-    "https://demo.52013120.xyz/"
     "https://ghfast.top/"
+    "https://free.cn.eu.org/"
+    "https://ghproxy.net/"
 )
-
 SHORT_CONNECT_TIMEOUT=5
 SHORT_MAX_TIMEOUT=7
 LONG_CONNECT_TIMEOUT=15
