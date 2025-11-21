@@ -561,7 +561,9 @@ restore_all_monitoring_rules() {
         if [ "$limit_enabled" = "true" ] && [ "$rate_limit" != "unlimited" ]; then
             local limit_lower=$(echo "$rate_limit" | tr '[:upper:]' '[:lower:]')
             local tc_limit
-            if [[ "$limit_lower" =~ mbps$ ]]; then
+            if [[ "$limit_lower" =~ kbps$ ]]; then
+                tc_limit=$(echo "$limit_lower" | sed 's/kbps$/kbit/')
+            elif [[ "$limit_lower" =~ mbps$ ]]; then
                 tc_limit=$(echo "$limit_lower" | sed 's/mbps$/mbit/')
             elif [[ "$limit_lower" =~ gbps$ ]]; then
                 tc_limit=$(echo "$limit_lower" | sed 's/gbps$/gbit/')
@@ -684,7 +686,7 @@ validate_bandwidth() {
 
     if [[ "$input" == "0" ]]; then
         return 0
-    elif [[ "$lower_input" =~ ^[0-9]+mbps$ ]] || [[ "$lower_input" =~ ^[0-9]+gbps$ ]]; then
+    elif [[ "$lower_input" =~ ^[0-9]+kbps$ ]] || [[ "$lower_input" =~ ^[0-9]+mbps$ ]] || [[ "$lower_input" =~ ^[0-9]+gbps$ ]]; then
         return 0
     else
         return 1
@@ -740,7 +742,7 @@ generate_port_range_mark() {
 # burst速率突发计算
 calculate_tc_burst() {
     local base_rate=$1
-    local rate_bytes_per_sec=$((base_rate * 1000000 / 8))
+    local rate_bytes_per_sec=$((base_rate * 1000 / 8))
     local burst_by_formula=$((rate_bytes_per_sec / 20))  # 50ms缓冲
     local min_burst=$((2 * 1500))                        # 2个MTU最小值
 
@@ -762,13 +764,16 @@ format_tc_burst() {
     fi
 }
 
-parse_tc_rate_to_mbps() {
+parse_tc_rate_to_kbps() {
     local total_limit=$1
     if [[ "$total_limit" =~ gbit$ ]]; then
         local rate=$(echo "$total_limit" | sed 's/gbit$//')
+        echo $((rate * 1000000))
+    elif [[ "$total_limit" =~ mbit$ ]]; then
+        local rate=$(echo "$total_limit" | sed 's/mbit$//')
         echo $((rate * 1000))
     else
-        echo $(echo "$total_limit" | sed 's/mbit$//')
+        echo $(echo "$total_limit" | sed 's/kbit$//')
     fi
 }
 
@@ -1333,7 +1338,7 @@ set_port_bandwidth_limit() {
     echo
     local port_list=$(IFS=','; echo "${ports_to_limit[*]}")
     echo "为端口 $port_list 设置带宽限制（速率控制）:"
-    echo "请输入限制值（0为无限制）（要带单位Mbps/Gbps）:"
+    echo "请输入限制值（0为无限制）（要带单位Kbps/Mbps/Gbps）:"
     echo "(多端口排序分别限制使用逗号,分隔)(只输入一个值，应用到所有端口):"
     read -p "带宽限制: " limit_input
 
@@ -1365,14 +1370,16 @@ set_port_bandwidth_limit() {
         remove_tc_limit "$port"
 
         if ! validate_bandwidth "$limit"; then
-            echo -e "${RED}端口 $port 格式错误，请使用如：100Mbps, 1Gbps${NC}"
+            echo -e "${RED}端口 $port 格式错误，请使用如：500Kbps, 100Mbps, 1Gbps${NC}"
             continue
         fi
 
         # 转换为TC格式
         local tc_limit
         local limit_lower=$(echo "$limit" | tr '[:upper:]' '[:lower:]')
-        if [[ "$limit_lower" =~ mbps$ ]]; then
+        if [[ "$limit_lower" =~ kbps$ ]]; then
+            tc_limit=$(echo "$limit_lower" | sed 's/kbps$/kbit/')
+        elif [[ "$limit_lower" =~ mbps$ ]]; then
             tc_limit=$(echo "$limit_lower" | sed 's/mbps$/mbit/')
         elif [[ "$limit_lower" =~ gbps$ ]]; then
             tc_limit=$(echo "$limit_lower" | sed 's/gbps$/gbit/')
@@ -1654,7 +1661,7 @@ apply_tc_limit() {
     tc class del dev $interface classid $class_id 2>/dev/null || true
 
     # 计算burst参数以优化性能
-    local base_rate=$(parse_tc_rate_to_mbps "$total_limit")
+    local base_rate=$(parse_tc_rate_to_kbps "$total_limit")
     local burst_bytes=$(calculate_tc_burst "$base_rate")
     local burst_size=$(format_tc_burst "$burst_bytes")
 
@@ -1690,13 +1697,14 @@ remove_tc_limit() {
 
     local class_id=$(generate_tc_class_id "$port")
 
-    if ! tc class show dev $interface 2>/dev/null | grep -q "$class_id"; then
-        return 0
-    fi
-
     if is_port_range "$port"; then
         # 端口段：删除基于标记的过滤器
         local mark_id=$(generate_port_range_mark "$port")
+        local mark_hex=$(printf '0x%x' "$mark_id")
+        
+        # 十六进制handle删除
+        tc filter del dev $interface protocol ip parent 1:0 prio 1 handle $mark_hex fw 2>/dev/null || true
+        # 备选：十进制handle删除
         tc filter del dev $interface protocol ip parent 1:0 prio 1 handle $mark_id fw 2>/dev/null || true
     else
         # 单端口：删除u32精确匹配过滤器
@@ -2182,7 +2190,9 @@ import_config() {
         if [ "$limit_enabled" = "true" ] && [ "$rate_limit" != "unlimited" ]; then
             local limit_lower=$(echo "$rate_limit" | tr '[:upper:]' '[:lower:]')
             local tc_limit
-            if [[ "$limit_lower" =~ mbps$ ]]; then
+            if [[ "$limit_lower" =~ kbps$ ]]; then
+                tc_limit=$(echo "$limit_lower" | sed 's/kbps$/kbit/')
+            elif [[ "$limit_lower" =~ mbps$ ]]; then
                 tc_limit=$(echo "$limit_lower" | sed 's/mbps$/mbit/')
             elif [[ "$limit_lower" =~ gbps$ ]]; then
                 tc_limit=$(echo "$limit_lower" | sed 's/gbps$/gbit/')
@@ -2199,15 +2209,15 @@ import_config() {
     rm -rf "$temp_dir"
 
     echo
-    echo -e "${GREEN}✅ 配置导入完成${NC}"
+    echo -e "${GREEN}配置导入完成${NC}"
     echo
-    echo "📊 导入结果："
+    echo "导入结果："
     echo "  导入端口数: ${#new_ports[@]} 个"
     if [ ${#new_ports[@]} -gt 0 ]; then
         echo "  端口列表: $(IFS=','; echo "${new_ports[*]}")"
     fi
     echo
-    echo -e "${YELLOW}💡 提示：${NC}"
+    echo -e "${YELLOW}提示：${NC}"
     echo "  - 所有端口监控规则已重新应用"
     echo "  - 通知配置已恢复"
     echo "  - 历史数据已恢复"
