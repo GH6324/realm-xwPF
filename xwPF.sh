@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SCRIPT_VERSION="v2.1.7"
+SCRIPT_VERSION="v2.1.8"
 REALM_VERSION="v2.9.2"
 
 NAT_LISTEN_PORT=""
@@ -1334,22 +1334,22 @@ edit_nat_server_config() {
     done
     
     local new_listen_ip
-    echo -ne "自定义(指定)入口监听IP地址(客户端连接IP,回车默认${GREEN}${LISTEN_IP:-::}${NC}): "
+    echo -ne "自定义(指定)入口监听IP/网卡接口(客户端连接IP/网卡,回车默认${GREEN}${LISTEN_IP:-::}${NC}): "
     read new_listen_ip
     if [ -z "$new_listen_ip" ]; then
         new_listen_ip="${LISTEN_IP:-::}"
-    elif ! validate_ip "$new_listen_ip"; then
-        echo -e "${RED}无效IP地址，保持原值${NC}"
+    elif ! validate_ip "$new_listen_ip" && ! [[ "$new_listen_ip" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
+        echo -e "${RED}无效IP地址或网卡名称，保持原值${NC}"
         new_listen_ip="${LISTEN_IP:-::}"
     fi
     
     local new_through_ip
-    echo -ne "自定义(指定)出口IP地址(适用于中转多IP出口情况,回车默认${GREEN}${THROUGH_IP:-::}${NC}): "
+    echo -ne "自定义(指定)出口IP/网卡接口(适用于多IP/网卡出口情况,回车默认${GREEN}${THROUGH_IP:-::}${NC}): "
     read new_through_ip
     if [ -z "$new_through_ip" ]; then
         new_through_ip="${THROUGH_IP:-::}"
-    elif ! validate_ip "$new_through_ip"; then
-        echo -e "${RED}无效IP地址，保持原值${NC}"
+    elif ! validate_ip "$new_through_ip" && ! [[ "$new_through_ip" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
+        echo -e "${RED}无效IP地址或网卡名称，保持原值${NC}"
         new_through_ip="${THROUGH_IP:-::}"
     fi
     
@@ -4315,7 +4315,7 @@ done
         echo ""
 
         while true; do
-            read -p "自定义(指定)入口监听IP地址(客户端连接IP,回车默认全部监听 ::): " listen_ip_input
+            read -p "自定义(指定)入口监听IP/网卡接口(客户端连接IP/网卡,回车默认全部监听 ::): " listen_ip_input
 
             if [ -z "$listen_ip_input" ]; then
                 # 使用默认值：双栈监听
@@ -4328,9 +4328,13 @@ done
                     NAT_LISTEN_IP="$listen_ip_input"
                     echo -e "${GREEN}监听IP设置为: $NAT_LISTEN_IP${NC}"
                     break
+                elif [[ "$listen_ip_input" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
+                    NAT_LISTEN_IP="$listen_ip_input"
+                    echo -e "${GREEN}监听网卡设置为: $NAT_LISTEN_IP${NC}"
+                    break
                 else
-                    echo -e "${RED}无效IP地址格式${NC}"
-                    echo -e "${YELLOW}示例: 192.168.1.100 或 2001:db8::1 或 0.0.0.0 或 ::${NC}"
+                    echo -e "${RED}无效IP地址或网卡名称格式${NC}"
+                    echo -e "${YELLOW}示例: 192.168.1.100 或 2001:db8::1 或 eth0${NC}"
                 fi
             fi
         done
@@ -4338,7 +4342,7 @@ done
         echo ""
 
         while true; do
-            read -p "自定义(指定)出口IP地址(适用于中转多IP出口情况,回车默认全部监听 ::): " through_ip_input
+            read -p "自定义(指定)出口IP/网卡接口(适用于多IP/网卡出口情况,回车默认全部监听 ::): " through_ip_input
 
             if [ -z "$through_ip_input" ]; then
                 NAT_THROUGH_IP="::"
@@ -4350,9 +4354,13 @@ done
                     NAT_THROUGH_IP="$through_ip_input"
                     echo -e "${GREEN}出口IP设置为: $NAT_THROUGH_IP${NC}"
                     break
+                elif [[ "$through_ip_input" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
+                    NAT_THROUGH_IP="$through_ip_input"
+                    echo -e "${GREEN}出口网卡设置为: $NAT_THROUGH_IP${NC}"
+                    break
                 else
-                    echo -e "${RED}无效IP地址格式${NC}"
-                    echo -e "${YELLOW}示例: 192.168.1.100 或 2001:db8::1 或 0.0.0.0 或 ::${NC}"
+                    echo -e "${RED}无效IP地址或网卡名称格式${NC}"
+                    echo -e "${YELLOW}示例: 192.168.1.100 或 2001:db8::1 或 eth0${NC}"
                 fi
             fi
         done
@@ -4435,7 +4443,10 @@ done
     echo ""
 
     while true; do
-        read -p "请输入选择 [1-6]: " transport_choice
+        read -p "请输入选择(回车默认1) [1-6]: " transport_choice
+        if [ -z "$transport_choice" ]; then
+            transport_choice="1"
+        fi
         case $transport_choice in
             1)
                 SECURITY_LEVEL="standard"
@@ -4750,7 +4761,10 @@ configure_exit_server() {
     echo ""
 
     while true; do
-        read -p "请输入选择 [1-6]: " transport_choice
+        read -p "请输入选择(回车默认1) [1-6]: " transport_choice
+        if [ -z "$transport_choice" ]; then
+            transport_choice="1"
+        fi
         case $transport_choice in
             1)
                 SECURITY_LEVEL="standard"
@@ -5295,6 +5309,17 @@ generate_rule_endpoint_config() {
     local target_states="$9"
 
     local endpoint_config=""
+    local listen_ip_val="${LISTEN_IP:-${NAT_LISTEN_IP:-::}}"
+    local listen_field=""
+    
+    # 判断listen_ip_val是IP还是网卡接口
+    if validate_ip "$listen_ip_val"; then
+        listen_field="\"listen\": \"${listen_ip_val}:${listen_port}\""
+    else
+        # 是网卡接口
+        listen_field="\"listen\": \"0.0.0.0:${listen_port}\",
+            \"listen_interface\": \"${listen_ip_val}\""
+    fi
 
     # 检查是否为多地址
     if [[ "$remote_host" == *","* ]]; then
@@ -5332,21 +5357,27 @@ generate_rule_endpoint_config() {
 
         endpoint_config="
         {
-            \"listen\": \"${LISTEN_IP:-${NAT_LISTEN_IP:-::}}:${listen_port}\",
+            ${listen_field},
             \"remote\": \"${enabled_addresses[0]}:${remote_port}\"${extra_addresses}"
     else
         # 单地址配置
         endpoint_config="
         {
-            \"listen\": \"${LISTEN_IP:-${NAT_LISTEN_IP:-::}}:${listen_port}\",
+            ${listen_field},
             \"remote\": \"${remote_host}:${remote_port}\""
     fi
 
     # 添加through字段（仅中转服务器）
     local role="${RULE_ROLE:-1}"
     if [ "$role" = "1" ] && [ -n "$THROUGH_IP" ] && [ "$THROUGH_IP" != "::" ]; then
-        endpoint_config="$endpoint_config,
+        if validate_ip "$THROUGH_IP"; then
+            endpoint_config="$endpoint_config,
             \"through\": \"$THROUGH_IP\""
+        else
+            # 是网卡接口
+            endpoint_config="$endpoint_config,
+            \"interface\": \"$THROUGH_IP\""
+        fi
     fi
 
     # 添加负载均衡配置（仅用于单规则多地址情况）
@@ -5628,9 +5659,18 @@ generate_endpoints_from_rules() {
         fi
 
         # 生成endpoint配置
+        # 生成endpoint配置
+        local listen_field=""
+        if validate_ip "$listen_ip"; then
+            listen_field="\"listen\": \"${listen_ip}:${port_key}\""
+        else
+            listen_field="\"listen\": \"0.0.0.0:${port_key}\",
+            \"listen_interface\": \"${listen_ip}\""
+        fi
+
         local endpoint_config="
         {
-            \"listen\": \"${listen_ip}:${port_key}\",
+            ${listen_field},
             \"remote\": \"${main_target}\""
 
         # 添加extra_remotes（如果有多个目标）
@@ -5663,10 +5703,16 @@ generate_endpoints_from_rules() {
         fi
 
         # 添加through字段（仅中转服务器）
+        # 添加through字段（仅中转服务器）
         local role="${port_roles[$port_key]:-1}"  # 使用存储的角色，默认为中转服务器
         if [ "$role" = "1" ] && [ -n "$through_ip" ] && [ "$through_ip" != "::" ]; then
-            endpoint_config="$endpoint_config,
+            if validate_ip "$through_ip"; then
+                endpoint_config="$endpoint_config,
             \"through\": \"$through_ip\""
+            else
+                endpoint_config="$endpoint_config,
+            \"interface\": \"$through_ip\""
+            fi
         fi
 
         # 添加传输配置 - 使用存储的规则角色信息
