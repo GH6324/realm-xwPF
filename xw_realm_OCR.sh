@@ -113,7 +113,7 @@ get_security_display() {
 # 解析transport配置
 parse_transport_config() {
     local transport="$1"
-    local role="$2"  # 1=中转服务器, 2=落地服务器
+    local role="$2"  # 1=中转服务器, 2=服务端服务器
 
     # 初始化返回值
     local security_level="standard"
@@ -140,7 +140,7 @@ parse_transport_config() {
                 # 中转服务器：从sni参数提取
                 tls_server_name=$(echo "$transport" | grep -oP 'sni=\K[^;]+' || echo "")
             else
-                # 落地服务器：从servername参数提取
+                # 服务端服务器：从servername参数提取
                 tls_server_name=$(echo "$transport" | grep -oP 'servername=\K[^;]+' || echo "")
             fi
         fi
@@ -152,16 +152,16 @@ parse_transport_config() {
                 # 中转服务器：有insecure关键字 → 自签证书
                 security_level="ws_tls_self"
             elif echo "$transport" | grep -q "servername="; then
-                # 落地服务器：有servername参数 → 自签证书
+                # 服务端服务器：有servername参数 → 自签证书
                 security_level="ws_tls_self"
             elif echo "$transport" | grep -q "cert=.*key="; then
-                # 落地服务器：有cert和key参数 → CA证书
+                # 服务端服务器：有cert和key参数 → CA证书
                 security_level="ws_tls_ca"
             elif [ "$role" = "1" ]; then
                 # 中转服务器：没有insecure → CA证书
                 security_level="ws_tls_ca"
             else
-                # 落地服务器：默认自签证书
+                # 服务端服务器：默认自签证书
                 security_level="ws_tls_self"
             fi
         elif [ "$has_ws" = true ]; then
@@ -172,16 +172,16 @@ parse_transport_config() {
                 # 中转服务器：有insecure关键字 → 自签证书
                 security_level="tls_self"
             elif echo "$transport" | grep -q "servername="; then
-                # 落地服务器：有servername参数 → 自签证书
+                # 服务端服务器：有servername参数 → 自签证书
                 security_level="tls_self"
             elif echo "$transport" | grep -q "cert=.*key="; then
-                # 落地服务器：有cert和key参数 → CA证书
+                # 服务端服务器：有cert和key参数 → CA证书
                 security_level="tls_ca"
             elif [ "$role" = "1" ]; then
                 # 中转服务器：没有insecure → CA证书
                 security_level="tls_ca"
             else
-                # 落地服务器：默认自签证书
+                # 服务端服务器：默认自签证书
                 security_level="tls_self"
             fi
         fi
@@ -244,10 +244,10 @@ process_json() {
         local rule_name="中转"
 
         if [ -n "$listen_transport" ]; then
-            # 有listen_transport字段，判断为落地服务器
+            # 有listen_transport字段，判断为服务端服务器
             rule_role="2"
-            rule_name="落地"
-            # 落地服务器监听IP强制改为::（双栈监听）
+            rule_name="服务端"
+            # 服务端服务器监听IP强制改为::（双栈监听）
             listen_ip="::"
         fi
         # 中转服务器保持原始监听IP
@@ -368,10 +368,10 @@ WS_PATH="$ws_path"
 WS_HOST="$ws_host"
 RULE_EOF
             else
-                # 落地服务器字段（使用主脚本的标准格式）
+                # 服务端服务器字段（使用主脚本的标准格式）
                 cat >> "$rule_file" << RULE_EOF
 
-# 落地服务器配置
+# 服务端服务器配置
 FORWARD_TARGET="$target"
 TLS_SERVER_NAME="$tls_server_name"
 TLS_CERT_PATH=""
@@ -519,7 +519,7 @@ for rule_file in "$OUTPUT_DIR"/rule-*.conf; do
             echo -e "  • ${GREEN}$RULE_NAME${NC}: $LISTEN_PORT → $REMOTE_HOST:$REMOTE_PORT"
             echo -e "    传输模式: ${YELLOW}$transport_display${NC}$balance_display"
         else
-            # 落地服务器
+            # 服务端服务器
             echo -e "  • ${GREEN}$RULE_NAME${NC}: $LISTEN_PORT → $FORWARD_TARGET"
             echo -e "    传输模式: ${YELLOW}$transport_display${NC}$balance_display"
         fi

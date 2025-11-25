@@ -291,7 +291,7 @@ check_port_usage() {
 
     if [ -n "$port_output" ]; then
         if echo "$port_output" | grep -q "realm"; then
-            echo -e "${GREEN}✓ 端口 $port 已被realm服务占用，支持单端口中转多落地配置${NC}"
+            echo -e "${GREEN}✓ 端口 $port 已被realm服务占用，支持单端口中转多服务端配置${NC}"
             return 1
         else
             echo -e "${YELLOW}警告: 端口 $port 已被其他服务占用${NC}"
@@ -319,7 +319,13 @@ check_connectivity() {
         return 1
     fi
 
-    nc -z -w"$timeout" "$target" "$port" >/dev/null 2>&1
+    # TCP检测
+    if nc -z -w"$timeout" "$target" "$port" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    # TCP失败则尝试UDP检测
+    nc -z -u -w"$timeout" "$target" "$port" >/dev/null 2>&1
     return $?
 }
 
@@ -418,7 +424,7 @@ create_exit_rules_for_ports() {
     done
 
     if [ ${#LISTEN_PORT_ARRAY[@]} -gt 1 ]; then
-        echo -e "${BLUE}多端口配置完成，共创建 ${#LISTEN_PORT_ARRAY[@]} 个落地规则${NC}"
+        echo -e "${BLUE}多端口配置完成，共创建 ${#LISTEN_PORT_ARRAY[@]} 个服务端规则${NC}"
     fi
 }
 
@@ -472,7 +478,7 @@ create_single_exit_rule() {
 
     local rule_id=$(generate_rule_id)
     local rule_file="${RULES_DIR}/rule-${rule_id}.conf"
-    local rule_name="落地"
+    local rule_name="服务端"
     local forward_target="$FORWARD_TARGET:$forward_port"
 
     cat > "$rule_file" <<EOF
@@ -505,7 +511,7 @@ MPTCP_MODE="off"
 PROXY_MODE="off"
 EOF
 
-    echo -e "${GREEN}✓ 落地配置已创建 (ID: $rule_id) 端口: $listen_port->$forward_target${NC}"
+    echo -e "${GREEN}✓ 服务端配置已创建 (ID: $rule_id) 端口: $listen_port->$forward_target${NC}"
 }
 
 validate_ip() {
@@ -1029,7 +1035,7 @@ list_rules_with_info() {
                             if [ "$has_relay_rules" = true ]; then
                                 echo ""
                             fi
-                            echo -e "${GREEN}落地服务器 (双端Realm架构):${NC}"
+                            echo -e "${GREEN}服务端服务器 (双端Realm架构):${NC}"
                             has_exit_rules=true
                         fi
                         exit_count=$((exit_count + 1))
@@ -1459,7 +1465,7 @@ edit_nat_server_config() {
     return 0
 }
 
-# 编辑落地服务器配置
+# 编辑服务端服务器配置
 edit_exit_server_config() {
     local rule_file="$1"
     read_rule_file "$rule_file"
@@ -1524,8 +1530,8 @@ interactive_add_rule() {
 
     echo "请选择新配置的角色:"
     echo -e "${GREEN}[1]${NC} 中转服务器"
-    echo -e "${GREEN}[2]${NC} 服务端(落地)服务器 (解密并转发)"
-    echo "双端架构用于一方加密一方解密：隧道,MPTCP，Proxy Protocol等"
+    echo -e "${GREEN}[2]${NC} 服务端服务器 (解密并转发)"
+    echo "解密并转发用于一方发送一方接收的场景如：隧道,MPTCP，Proxy Protocol等"
     echo ""
     local RULE_ROLE
     while true; do
@@ -1536,7 +1542,7 @@ interactive_add_rule() {
                 break
                 ;;
             2)
-                echo -e "${GREEN}已选择: 服务端(落地)服务器 (解密并转发)${NC}"
+                echo -e "${GREEN}已选择: 服务端服务器 (解密并转发)${NC}"
                 break
                 ;;
             *)
@@ -1935,7 +1941,7 @@ export_config_with_view() {
     esac
 }
 
-# 简化验证逻辑，返回配置目录路径供后续使用
+# 验证逻辑，返回配置目录路径供后续使用
 validate_config_package_content() {
     local package_file="$1"
     local temp_dir=$(mktemp -d)
@@ -2060,7 +2066,7 @@ import_config_package() {
         sysctl -p "$mptcp_conf" >/dev/null 2>&1
     fi
 
-    # 精确解析MPTCP端点配置格式，支持三种端点模式
+    # 解析MPTCP端点配置格式，支持三种端点模式
     if [ -f "${config_dir}/mptcp_endpoints.conf" ] && command -v ip >/dev/null 2>&1; then
         echo -e "${YELLOW}正在恢复MPTCP端点配置...${NC}"
         /usr/bin/ip mptcp endpoint flush 2>/dev/null
@@ -2104,7 +2110,7 @@ import_config_package() {
     read -p "按回车键返回..."
 }
 
-# 确保每次使用最新版本的OCR脚本，避免功能滞后
+# 每次更新OCR脚本
 download_realm_ocr_script() {
     local script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xw_realm_OCR.sh"
     local target_path="/etc/realm/xw_realm_OCR.sh"
@@ -2206,12 +2212,12 @@ rules_management_menu() {
                                 if [ "$has_relay_rules" = true ]; then
                                     echo ""
                                 fi
-                                echo -e "${GREEN}落地服务器 (双端Realm架构):${NC}"
+                                echo -e "${GREEN}服务端服务器 (双端Realm架构):${NC}"
                                 has_exit_rules=true
                             fi
                             exit_count=$((exit_count + 1))
                             local security_display=$(get_security_display "$SECURITY_LEVEL" "$WS_PATH" "$WS_HOST")
-                            # 落地服务器使用FORWARD_TARGET而不是REMOTE_HOST
+                            # 服务端服务器使用FORWARD_TARGET而不是REMOTE_HOST
                             local target_host="${FORWARD_TARGET%:*}"
                             local target_port="${FORWARD_TARGET##*:}"
                             local display_target=$(smart_display_target "$target_host")
@@ -2673,6 +2679,97 @@ get_mptcp_connections_stats() {
     fi
 }
 
+mptcp_handle_unsupported_state() {
+    local kernel_version=$(uname -r)
+    local kernel_major=$(echo $kernel_version | cut -d. -f1)
+    local kernel_minor=$(echo $kernel_version | cut -d. -f2)
+
+    echo -e "${RED}系统不支持MPTCP或未启用${NC}"
+    echo ""
+    echo -e "${YELLOW}MPTCP要求：${NC}"
+    echo -e "  • Linux内核版本 > 5.6"
+    echo -e "  • net.mptcp.enabled=1"
+    echo ""
+
+    echo -e "${BLUE}当前内核版本: ${GREEN}$kernel_version${NC}"
+
+    if [ "$kernel_major" -lt 5 ] || ([ "$kernel_major" -eq 5 ] && [ "$kernel_minor" -le 6 ]); then
+        echo -e "${RED}✗ 内核版本不支持MPTCP${NC}(需要 > 5.6)"
+    else
+        echo -e "${GREEN}✓ 内核版本支持MPTCP${NC}"
+    fi
+
+    if [ -f "/proc/sys/net/mptcp/enabled" ]; then
+        local enabled=$(cat /proc/sys/net/mptcp/enabled 2>/dev/null)
+        if [ "$enabled" = "1" ]; then
+            echo -e "${GREEN}✓ MPTCP已启用${NC}(net.mptcp.enabled=$enabled)"
+        else
+            echo -e "${RED}✗ MPTCP未启用${NC}(net.mptcp.enabled=$enabled，需要为1)"
+        fi
+    else
+        echo -e "${RED}✗ 系统不支持MPTCP${NC}(/proc/sys/net/mptcp/enabled 不存在)"
+    fi
+
+    echo ""
+    read -p "是否尝试启用MPTCP? [y/N]: " enable_choice
+    if [[ "$enable_choice" =~ ^[Yy]$ ]]; then
+        enable_mptcp
+    fi
+    echo ""
+    read -p "按回车键返回..."
+}
+
+mptcp_check_and_persist_config() {
+    local current_status=$(cat /proc/sys/net/mptcp/enabled 2>/dev/null)
+    local config_file="/etc/sysctl.d/90-enable-MPTCP.conf"
+
+    echo -e "${GREEN}✓ 系统支持MPTCP${NC}(net.mptcp.enabled=$current_status)"
+
+    if [ "$current_status" = "1" ]; then
+        if [ -f "$config_file" ]; then
+            echo -e "${GREEN}✓ 系统已开启MPTCP${NC}(MPTCP配置已设置)"
+        else
+            echo -e "${YELLOW}⚠ 系统已开启MPTCP${NC}(临时开启，重启后可能失效)"
+            echo ""
+            read -p "是否保存为配置文件重启依旧生效？[y/N]: " save_config
+            if [[ "$save_config" =~ ^[Yy]$ ]]; then
+                if echo "net.mptcp.enabled=1" > "$config_file" 2>/dev/null; then
+                    echo -e "${GREEN}✓ MPTCP配置已保存: $config_file${NC}"
+
+                    if sysctl -p "$config_file" >/dev/null 2>&1; then
+                        echo -e "${GREEN}✓ 配置已立即生效，重启后自动加载${NC}"
+                    else
+                        echo -e "${YELLOW}配置文件已保存，但立即应用失败${NC}"
+                        echo -e "${BLUE}手动应用配置: sysctl -p $config_file${NC}"
+                    fi
+                    echo ""
+                    read -p "按回车键刷新状态显示..."
+                    return 0
+                else
+                    echo -e "${RED}✗ 保存MPTCP配置失败${NC}"
+                    echo -e "${YELLOW}请手动执行: echo 'net.mptcp.enabled=1' > $config_file${NC}"
+                fi
+            fi
+        fi
+    else
+        echo -e "${RED}✗ 系统未开启MPTCP${NC}(当前为普通TCP模式)"
+    fi
+    echo ""
+    return 1
+}
+
+mptcp_display_dashboard() {
+    echo -e "${BLUE}网络环境状态:${NC}"
+    get_network_interfaces_detailed
+    echo ""
+
+    get_mptcp_endpoints_status
+    local connections_stats=$(get_mptcp_connections_stats)
+    echo -e "${BLUE}MPTCP连接统计:${NC}"
+    echo -e "  $connections_stats"
+    echo ""
+}
+
 # MPTCP管理主菜单
 mptcp_management_menu() {
     # 初始化MPTCP字段（确保向后兼容）
@@ -2684,91 +2781,15 @@ mptcp_management_menu() {
         echo ""
 
         if ! check_mptcp_support; then
-            local kernel_version=$(uname -r)
-            local kernel_major=$(echo $kernel_version | cut -d. -f1)
-            local kernel_minor=$(echo $kernel_version | cut -d. -f2)
-
-            echo -e "${RED}系统不支持MPTCP或未启用${NC}"
-            echo ""
-            echo -e "${YELLOW}MPTCP要求：${NC}"
-            echo -e "  • Linux内核版本 > 5.6"
-            echo -e "  • net.mptcp.enabled=1"
-            echo ""
-
-            echo -e "${BLUE}当前内核版本: ${GREEN}$kernel_version${NC}"
-
-            if [ "$kernel_major" -lt 5 ] || ([ "$kernel_major" -eq 5 ] && [ "$kernel_minor" -le 6 ]); then
-                echo -e "${RED}✗ 内核版本不支持MPTCP${NC}(需要 > 5.6)"
-            else
-                echo -e "${GREEN}✓ 内核版本支持MPTCP${NC}"
-            fi
-
-            if [ -f "/proc/sys/net/mptcp/enabled" ]; then
-                local enabled=$(cat /proc/sys/net/mptcp/enabled 2>/dev/null)
-                if [ "$enabled" = "1" ]; then
-                    echo -e "${GREEN}✓ MPTCP已启用${NC}(net.mptcp.enabled=$enabled)"
-                else
-                    echo -e "${RED}✗ MPTCP未启用${NC}(net.mptcp.enabled=$enabled，需要为1)"
-                fi
-            else
-                echo -e "${RED}✗ 系统不支持MPTCP${NC}(/proc/sys/net/mptcp/enabled 不存在)"
-            fi
-
-            echo ""
-            read -p "是否尝试启用MPTCP? [y/N]: " enable_choice
-            if [[ "$enable_choice" =~ ^[Yy]$ ]]; then
-                enable_mptcp
-            fi
-            echo ""
-            read -p "按回车键返回..."
+            mptcp_handle_unsupported_state
             return
         fi
 
-        local current_status=$(cat /proc/sys/net/mptcp/enabled 2>/dev/null)
-        local config_file="/etc/sysctl.d/90-enable-MPTCP.conf"
-
-        echo -e "${GREEN}✓ 系统支持MPTCP${NC}(net.mptcp.enabled=$current_status)"
-
-        if [ "$current_status" = "1" ]; then
-            if [ -f "$config_file" ]; then
-                echo -e "${GREEN}✓ 系统已开启MPTCP${NC}(MPTCP配置已设置)"
-            else
-                echo -e "${YELLOW}⚠ 系统已开启MPTCP${NC}(临时开启，重启后可能失效)"
-                echo ""
-                read -p "是否保存为配置文件重启依旧生效？[y/N]: " save_config
-                if [[ "$save_config" =~ ^[Yy]$ ]]; then
-                    if echo "net.mptcp.enabled=1" > "$config_file" 2>/dev/null; then
-                        echo -e "${GREEN}✓ MPTCP配置已保存: $config_file${NC}"
-
-                        if sysctl -p "$config_file" >/dev/null 2>&1; then
-                            echo -e "${GREEN}✓ 配置已立即生效，重启后自动加载${NC}"
-                        else
-                            echo -e "${YELLOW}配置文件已保存，但立即应用失败${NC}"
-                            echo -e "${BLUE}手动应用配置: sysctl -p $config_file${NC}"
-                        fi
-                        echo ""
-                        read -p "按回车键刷新状态显示..."
-                        continue
-                    else
-                        echo -e "${RED}✗ 保存MPTCP配置失败${NC}"
-                        echo -e "${YELLOW}请手动执行: echo 'net.mptcp.enabled=1' > $config_file${NC}"
-                    fi
-                fi
-            fi
-        else
-            echo -e "${RED}✗ 系统未开启MPTCP${NC}(当前为普通TCP模式)"
+        if mptcp_check_and_persist_config; then
+            continue
         fi
-        echo ""
 
-        echo -e "${BLUE}网络环境状态:${NC}"
-        get_network_interfaces_detailed
-        echo ""
-
-        get_mptcp_endpoints_status
-        local connections_stats=$(get_mptcp_connections_stats)
-        echo -e "${BLUE}MPTCP连接统计:${NC}"
-        echo -e "  $connections_stats"
-        echo ""
+        mptcp_display_dashboard
 
         if ! list_rules_with_info "mptcp"; then
             echo ""
@@ -2972,21 +2993,12 @@ set_mptcp_mode() {
     fi
 }
 
-
-
 # 初始化所有规则文件的MPTCP字段（确保向后兼容）
 init_mptcp_fields() {
     init_rule_field "MPTCP_MODE" "off"
 }
 
-add_mptcp_endpoint_interactive() {
-    echo -e "${GREEN}=== 添加MPTCP端点 ===${NC}"
-    echo ""
-
-    echo -e "${BLUE}当前MPTCP端点:${NC}"
-    get_mptcp_endpoints_status
-    echo ""
-
+mptcp_select_interface() {
     local interfaces=()
     local interface_names=()
     local interface_count=0
@@ -3019,26 +3031,28 @@ add_mptcp_endpoint_interactive() {
     done
 
     if [ $interface_count -eq 0 ]; then
-        echo -e "${RED}未找到配置IP地址的网络接口${NC}"
+        echo -e "${RED}未找到配置IP地址的网络接口${NC}" >&2
         return 1
     fi
 
-    echo -e "${BLUE}当前网络接口:${NC}"
+    echo -e "${BLUE}当前网络接口:${NC}" >&2
     for i in $(seq 0 $((interface_count - 1))); do
-        echo -e "${GREEN}$((i + 1)).${NC} ${interface_names[$i]}"
+        echo -e "${GREEN}$((i + 1)).${NC} ${interface_names[$i]}" >&2
     done
-    echo ""
+    echo "" >&2
 
-    read -p "请选择网卡 [1-$interface_count]: " interface_choice
+    echo -n "请选择网卡 [1-$interface_count]: " >&2
+    read interface_choice
     if [[ ! "$interface_choice" =~ ^[0-9]+$ ]] || [ "$interface_choice" -lt 1 ] || [ "$interface_choice" -gt $interface_count ]; then
-        echo -e "${RED}无效的选择${NC}"
+        echo -e "${RED}无效的选择${NC}" >&2
         return 1
     fi
 
-    local selected_interface="${interfaces[$((interface_choice - 1))]}"
-    echo -e "${BLUE}已选择网卡: $selected_interface${NC}"
-    echo ""
+    echo "${interfaces[$((interface_choice - 1))]}"
+}
 
+mptcp_select_ips() {
+    local selected_interface="$1"
     local selected_ips=()
     local ip_display=()
     local ip_count=0
@@ -3066,70 +3080,159 @@ add_mptcp_endpoint_interactive() {
     fi
 
     if [ $ip_count -eq 0 ]; then
-        echo -e "${RED}选中的网卡没有可用的IP地址${NC}"
+        echo -e "${RED}选中的网卡没有可用的IP地址${NC}" >&2
         return 1
     fi
 
-    echo -e "${BLUE}${selected_interface} 的可用IP地址:${NC}"
+    echo -e "${BLUE}${selected_interface} 的可用IP地址:${NC}" >&2
     for i in $(seq 0 $((ip_count - 1))); do
-        echo -e "${GREEN}$((i + 1)).${NC} ${ip_display[$i]}"
+        echo -e "${GREEN}$((i + 1)).${NC} ${ip_display[$i]}" >&2
     done
-    echo ""
+    echo "" >&2
 
-    read -p "请选择IP地址(回车默认全选): " ip_choice
+    echo -n "请选择IP地址(回车默认全选): " >&2
+    read ip_choice
 
-    local selected_ip_list=()
     if [ -z "$ip_choice" ]; then
-        selected_ip_list=("${selected_ips[@]}")
-        echo -e "${BLUE}已选择全部IP地址${NC}"
+        echo -e "${BLUE}已选择全部IP地址${NC}" >&2
+        printf "%s\n" "${selected_ips[@]}"
     else
         if [[ ! "$ip_choice" =~ ^[0-9]+$ ]] || [ "$ip_choice" -lt 1 ] || [ "$ip_choice" -gt $ip_count ]; then
-            echo -e "${RED}无效的选择${NC}"
+            echo -e "${RED}无效的选择${NC}" >&2
             return 1
         fi
-        selected_ip_list=("${selected_ips[$((ip_choice - 1))]}")
-        echo -e "${BLUE}已选择IP地址: ${selected_ips[$((ip_choice - 1))]}${NC}"
+        echo -e "${BLUE}已选择IP地址: ${selected_ips[$((ip_choice - 1))]}${NC}" >&2
+        echo "${selected_ips[$((ip_choice - 1))]}"
     fi
-    echo ""
+}
 
-    echo ""
-    echo -e "${BLUE}请选择MPTCP端点类型:${NC}"
-    echo ""
-    echo -e "${YELLOW}建议:${NC}"
-    echo -e "  • 中转机/客户端: 选择 subflow fullmesh"
-    echo -e "  • 落地机/服务端: 选择 signal (可选)"
-    echo -e "  • 备用路径: 选择 subflow backup (仅在主路径故障时使用)"
-    echo ""
-    echo -e "${GREEN}1.${NC} subflow fullmesh (客户端模式 - 全网格连接)"
-    echo -e "${BLUE}2.${NC} signal (服务端模式 - 通告地址给客户端)"
-    echo -e "${YELLOW}3.${NC} subflow backup (备用模式)"
-    echo ""
+mptcp_select_endpoint_type() {
+    echo "" >&2
+    echo -e "${BLUE}请选择MPTCP端点类型:${NC}" >&2
+    echo "" >&2
+    echo -e "${YELLOW}建议:${NC}" >&2
+    echo -e "  • 中转机/客户端: 选择 subflow fullmesh" >&2
+    echo -e "  • 服务端机/服务端: 选择 signal (可选)" >&2
+    echo -e "  • 备用路径: 选择 subflow backup (仅在主路径故障时使用)" >&2
+    echo "" >&2
+    echo -e "${GREEN}1.${NC} subflow fullmesh (客户端模式 - 全网格连接)" >&2
+    echo -e "${BLUE}2.${NC} signal (服务端模式 - 通告地址给客户端)" >&2
+    echo -e "${YELLOW}3.${NC} subflow backup (备用模式)" >&2
+    echo "" >&2
 
-    read -p "请选择端点类型(回车默认 1) [1-3]: " type_choice
+    echo -n "请选择端点类型(回车默认 1) [1-3]: " >&2
+    read type_choice
 
     if [ -z "$type_choice" ]; then
         type_choice="1"
     fi
 
-    local endpoint_type
-    local type_description
     case "$type_choice" in
         "1")
-            endpoint_type="subflow fullmesh"
-            type_description="subflow fullmesh (全网格模式)"
+            echo "subflow fullmesh"
             ;;
         "2")
-            endpoint_type="signal"
-            type_description="signal (服务端模式)"
+            echo "signal"
             ;;
         "3")
-            endpoint_type="subflow backup"
-            type_description="subflow backup (备用模式)"
+            echo "subflow backup"
             ;;
         *)
-            echo -e "${RED}无效的选择，请重新输入${NC}"
+            echo -e "${RED}无效的选择，请重新输入${NC}" >&2
             return 1
             ;;
+    esac
+}
+
+mptcp_select_endpoint_to_delete() {
+    echo -e "${BLUE}当前MPTCP端点:${NC}" >&2
+    local endpoints_output=$(/usr/bin/ip mptcp endpoint show 2>/dev/null)
+
+    if [ -z "$endpoints_output" ]; then
+        echo -e "${YELLOW}暂无MPTCP端点配置${NC}" >&2
+        return 1
+    fi
+
+    local endpoint_count=0
+    local endpoints_list=()
+
+    while IFS= read -r line; do
+        if [ -n "$line" ]; then
+            endpoint_count=$((endpoint_count + 1))
+            endpoints_list+=("$line")
+
+            local id=$(echo "$line" | grep -oP 'id \K[0-9]+' || echo "")
+            local addr=$(echo "$line" | grep -oP '^[^ ]+' || echo "")
+            local dev=$(echo "$line" | grep -oP 'dev \K[^ ]+' || echo "")
+            local flags=""
+            if echo "$line" | grep -q "subflow.*fullmesh"; then
+                flags="[subflow fullmesh]"
+            elif echo "$line" | grep -q "subflow.*backup"; then
+                flags="[subflow backup]"
+            elif echo "$line" | grep -q "signal"; then
+                flags="[signal]"
+            else
+                flags="[unknown]"
+            fi
+
+            echo -e "  ${endpoint_count}. ID $id: $addr dev $dev $flags" >&2
+        fi
+    done <<< "$endpoints_output"
+
+    if [ $endpoint_count -eq 0 ]; then
+        echo -e "${YELLOW}暂无MPTCP端点配置${NC}" >&2
+        return 1
+    fi
+
+    echo "" >&2
+    echo -n "请选择要删除的端点编号 [1-$endpoint_count]: " >&2
+    read choice
+
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt $endpoint_count ]; then
+        echo -e "${RED}无效的选择${NC}" >&2
+        return 1
+    fi
+
+    echo "${endpoints_list[$((choice-1))]}"
+}
+
+add_mptcp_endpoint_interactive() {
+    echo -e "${GREEN}=== 添加MPTCP端点 ===${NC}"
+    echo ""
+
+    echo -e "${BLUE}当前MPTCP端点:${NC}"
+    get_mptcp_endpoints_status
+    echo ""
+
+    local selected_interface
+    selected_interface=$(mptcp_select_interface)
+    if [ $? -ne 0 ]; then return 1; fi
+
+    echo -e "${BLUE}已选择网卡: $selected_interface${NC}"
+    echo ""
+
+    local selected_ips_output
+    selected_ips_output=$(mptcp_select_ips "$selected_interface")
+    if [ $? -ne 0 ]; then return 1; fi
+
+    local selected_ip_list=()
+    while IFS= read -r ip; do
+        if [ -n "$ip" ]; then
+            selected_ip_list+=("$ip")
+        fi
+    done <<< "$selected_ips_output"
+
+    echo ""
+
+    local endpoint_type
+    endpoint_type=$(mptcp_select_endpoint_type)
+    if [ $? -ne 0 ]; then return 1; fi
+    
+    local type_description="$endpoint_type"
+    case "$endpoint_type" in
+        "subflow fullmesh") type_description="subflow fullmesh (全网格模式)" ;;
+        "signal") type_description="signal (服务端模式)" ;;
+        "subflow backup") type_description="subflow backup (备用模式)" ;;
     esac
 
     echo -e "${YELLOW}正在添加MPTCP端点...${NC}"
@@ -3173,55 +3276,10 @@ delete_mptcp_endpoint_interactive() {
     echo -e "${GREEN}=== 删除MPTCP端点 ===${NC}"
     echo ""
 
-    echo -e "${BLUE}当前MPTCP端点:${NC}"
-    local endpoints_output=$(/usr/bin/ip mptcp endpoint show 2>/dev/null)
+    local selected_line
+    selected_line=$(mptcp_select_endpoint_to_delete)
+    if [ $? -ne 0 ]; then return 0; fi
 
-    if [ -z "$endpoints_output" ]; then
-        echo -e "${YELLOW}暂无MPTCP端点配置${NC}"
-        return 0
-    fi
-
-    local endpoint_count=0
-    local endpoints_list=()
-
-    while IFS= read -r line; do
-        if [ -n "$line" ]; then
-            endpoint_count=$((endpoint_count + 1))
-            endpoints_list+=("$line")
-
-            local id=$(echo "$line" | grep -oP 'id \K[0-9]+' || echo "")
-            local addr=$(echo "$line" | grep -oP '^[^ ]+' || echo "")
-            local dev=$(echo "$line" | grep -oP 'dev \K[^ ]+' || echo "")
-            # 解析MPTCP端点类型：脚本支持的三种模式
-            local flags=""
-            if echo "$line" | grep -q "subflow.*fullmesh"; then
-                flags="[subflow fullmesh]"
-            elif echo "$line" | grep -q "subflow.*backup"; then
-                flags="[subflow backup]"
-            elif echo "$line" | grep -q "signal"; then
-                flags="[signal]"
-            else
-                flags="[unknown]"
-            fi
-
-            echo -e "  ${endpoint_count}. ID $id: $addr dev $dev $flags"
-        fi
-    done <<< "$endpoints_output"
-
-    if [ $endpoint_count -eq 0 ]; then
-        echo -e "${YELLOW}暂无MPTCP端点配置${NC}"
-        return 0
-    fi
-
-    echo ""
-    read -p "请选择要删除的端点编号 [1-$endpoint_count]: " choice
-
-    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt $endpoint_count ]; then
-        echo -e "${RED}无效的选择${NC}"
-        return 1
-    fi
-
-    local selected_line="${endpoints_list[$((choice-1))]}"
     local endpoint_id=$(echo "$selected_line" | grep -oP 'id \K[0-9]+' || echo "")
     local endpoint_addr=$(echo "$selected_line" | grep -oP '^[^ ]+' || echo "")
 
@@ -5378,7 +5436,7 @@ generate_endpoints_from_rules() {
                     # 根据角色决定默认监听IP
                     local default_listen_ip
                     if [ "$RULE_ROLE" = "2" ]; then
-                        # 落地服务器使用双栈监听
+                        # 服务端服务器使用双栈监听
                         default_listen_ip="::"
                     else
                         # 中转服务器使用动态输入的IP
@@ -5398,7 +5456,7 @@ generate_endpoints_from_rules() {
                 local targets_to_add=""
 
                 if [ "$RULE_ROLE" = "2" ]; then
-                    # 落地服务器使用FORWARD_TARGET
+                    # 服务端服务器使用FORWARD_TARGET
                     targets_to_add="$FORWARD_TARGET"
                 else
                     # 中转服务器：优先使用TARGET_STATES，否则使用REMOTE_HOST
@@ -5539,7 +5597,7 @@ generate_endpoints_from_rules() {
         if [ -z "$listen_ip" ]; then
             local role="${port_roles[$port_key]:-1}"
             if [ "$role" = "2" ]; then
-                # 落地服务器使用双栈监听
+                # 服务端服务器使用双栈监听
                 listen_ip="::"
             else
                 # 中转服务器使用动态输入的IP
@@ -5811,7 +5869,7 @@ generate_realm_config() {
             if read_rule_file "$rule_file" && [ "$ENABLED" = "true" ]; then
                 # 根据规则角色使用不同的字段
                 if [ "$RULE_ROLE" = "2" ]; then
-                    # 落地服务器使用FORWARD_TARGET
+                    # 服务端服务器使用FORWARD_TARGET
                     local target_host="${FORWARD_TARGET%:*}"
                     local target_port="${FORWARD_TARGET##*:}"
                     local display_target=$(smart_display_target "$target_host")
@@ -6093,7 +6151,7 @@ service_status() {
                 if read_rule_file "$rule_file" && [ "$ENABLED" = "true" ]; then
                     # 根据规则角色使用不同的字段
                     if [ "$RULE_ROLE" = "2" ]; then
-                        # 落地服务器使用FORWARD_TARGET
+                        # 服务端服务器使用FORWARD_TARGET
                         local target_host="${FORWARD_TARGET%:*}"
                         local target_port="${FORWARD_TARGET##*:}"
                         local display_target=$(smart_display_target "$target_host")
@@ -6294,7 +6352,7 @@ show_config() {
                         echo -e "  规则 $RULE_ID: ${status_color}$status_text${NC} - $RULE_NAME"
                         # 根据规则角色使用不同的字段
                         if [ "$RULE_ROLE" = "2" ]; then
-                            # 落地服务器使用FORWARD_TARGET
+                            # 服务端服务器使用FORWARD_TARGET
                             local target_host="${FORWARD_TARGET%:*}"
                             local target_port="${FORWARD_TARGET##*:}"
                             local display_target=$(smart_display_target "$target_host")
@@ -6471,7 +6529,7 @@ show_brief_status() {
                 fi
             done
 
-            # 落地服务器规则
+            # 服务端服务器规则
             local has_exit_rules=false
             local exit_count=0
             for rule_file in "${RULES_DIR}"/rule-*.conf; do
@@ -6481,13 +6539,13 @@ show_brief_status() {
                             if [ "$has_relay_rules" = true ]; then
                                 echo ""
                             fi
-                            echo -e "${GREEN}落地服务器 (双端Realm架构):${NC}"
+                            echo -e "${GREEN}服务端服务器 (双端Realm架构):${NC}"
                             has_exit_rules=true
                         fi
                         exit_count=$((exit_count + 1))
                         # 显示详细的转发配置信息
                         local security_display=$(get_security_display "$SECURITY_LEVEL" "$WS_PATH" "$WS_HOST")
-                        # 落地服务器使用FORWARD_TARGET而不是REMOTE_HOST
+                        # 服务端服务器使用FORWARD_TARGET而不是REMOTE_HOST
                         local target_host="${FORWARD_TARGET%:*}"
                         local target_port="${FORWARD_TARGET##*:}"
                         local display_target=$(smart_display_target "$target_host")
@@ -6514,7 +6572,7 @@ show_brief_status() {
                     if read_rule_file "$rule_file" && [ "$ENABLED" = "false" ]; then
                         # 根据规则角色使用不同的字段
                         if [ "$RULE_ROLE" = "2" ]; then
-                            # 落地服务器使用FORWARD_TARGET
+                            # 服务端服务器使用FORWARD_TARGET
                             local target_host="${FORWARD_TARGET%:*}"
                             local target_port="${FORWARD_TARGET##*:}"
                             local display_target=$(smart_display_target "$target_host")

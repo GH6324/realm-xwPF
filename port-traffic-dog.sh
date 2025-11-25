@@ -257,7 +257,7 @@ get_default_interface() {
     if [ ${#interfaces[@]} -gt 0 ]; then
         echo "${interfaces[0]}"
     else
-        echo "eth0"  # 最后的备选方案
+        echo "eth0"
     fi
 }
 
@@ -2226,8 +2226,6 @@ import_config() {
     read -p "按回车键返回..."
     manage_configuration
 }
-
-
 
 # 统一下载函数
 download_with_sources() {
