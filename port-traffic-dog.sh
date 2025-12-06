@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-readonly SCRIPT_VERSION="1.2.3"
+readonly SCRIPT_VERSION="1.2.4"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -585,10 +585,11 @@ calculate_total_traffic() {
         "double")
             echo $((input_bytes + output_bytes))
             ;;
-        "single")
-            echo $output_bytes
+        "relay")
+            # 代理/中转模式：估算入站=In+Out，总流量=估算入站+Out=In+2*Out
+            echo $((input_bytes + output_bytes * 2))
             ;;
-        *)
+        "single"|*)
             echo $output_bytes
             ;;
     esac
@@ -625,7 +626,9 @@ get_port_status_label() {
             local usage_percent=$((current_usage * 100 / limit_bytes))
 
             local quota_display="$monthly_limit"
-            if [ "$billing_mode" = "double" ]; then
+            if [ "$billing_mode" = "relay" ]; then
+                status_tags+=("[relay双向${quota_display}]")
+            elif [ "$billing_mode" = "double" ]; then
                 status_tags+=("[双向${quota_display}]")
             else
                 status_tags+=("[单向${quota_display}]")
@@ -652,7 +655,9 @@ get_port_status_label() {
                 status_tags+=("[已超限]")
             fi
         else
-            if [ "$billing_mode" = "double" ]; then
+            if [ "$billing_mode" = "relay" ]; then
+                status_tags+=("[relay双向无限制]")
+            elif [ "$billing_mode" = "double" ]; then
                 status_tags+=("[双向无限制]")
             else
                 status_tags+=("[单向无限制]")
@@ -815,9 +820,16 @@ format_port_list() {
         local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"single\"" "$CONFIG_FILE")
         local total_bytes=$(calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode")
         local total_formatted=$(format_bytes $total_bytes)
-        local input_formatted=$(format_bytes $input_bytes)
         local output_formatted=$(format_bytes $output_bytes)
         local status_label=$(get_port_status_label "$port")
+
+        # relay模式：入站显示为估算值(In+Out)，出站保持原值
+        if [ "$billing_mode" = "relay" ]; then
+            local input_estimated=$((input_bytes + output_bytes))
+            local input_formatted=$(format_bytes $input_estimated)
+        else
+            local input_formatted=$(format_bytes $input_bytes)
+        fi
 
         if [ "$format_type" = "display" ]; then
             echo -e "端口:${GREEN}$port${NC} | 总流量:${GREEN}$total_formatted${NC} | 上行(入站): ${GREEN}$input_formatted${NC} | 下行(出站):${GREEN}$output_formatted${NC} | ${YELLOW}$status_label${NC}"
@@ -962,22 +974,27 @@ add_port_monitoring() {
 
     echo
     echo -e "${GREEN}说明:${NC}"
-    echo "1. 双向流量统计："
-    echo "   总流量 = 入站流量 + 出站流量"
+    echo "1. 代理/中转模式双向统计（推荐用于relay/proxy场景）："
+    echo "   估算入站 = 入站 + 出站，总流量 = 估算入站 + 出站"
     echo
     echo "2. 单向流量统计模式："
     echo "   总流量 = 只统计出站流量"
     echo
+    echo "3. 双向流量统计(relay/proxy场景近似单向统计)："
+    echo "   总流量 = 入站流量 + 出站流量"
+    echo
     echo "请选择统计模式:"
-    echo "1. 双向流量统计"
+    echo "1. 代理/中转模式双向统计"
     echo "2. 单向流量统计"
-    read -p "请选择(回车默认1) [1-2]: " billing_choice
+    echo "3. 双向流量统计"
+    read -p "请选择(回车默认1) [1-3]: " billing_choice
 
-    local billing_mode="double"
+    local billing_mode="relay"
     case $billing_choice in
-        1|"") billing_mode="double" ;;
+        1|"") billing_mode="relay" ;;
         2) billing_mode="single" ;;
-        *) billing_mode="double" ;;
+        3) billing_mode="double" ;;
+        *) billing_mode="relay" ;;
     esac
 
     echo
@@ -1551,8 +1568,25 @@ apply_nftables_quota() {
 
         nft add quota $family $table_name $quota_name { over $quota_bytes bytes used $current_total bytes } 2>/dev/null || true
 
-        if [ "$billing_mode" = "double" ]; then
-            # 双向统计：入站和出站都计入配额
+        if [ "$billing_mode" = "relay" ]; then
+            # relay模式：入站累加1次，出站累加2次（双规则实现）
+            # 入站：只需quota drop规则（累加1次）
+            nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name input udp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            # 出站：先insert drop规则，后insert普通规则（执行顺序：普通→drop，累加2次）
+            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            # 额外的普通quota规则（会排在drop前面执行，实现出站×2累加）
+            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" 2>/dev/null || true
+            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" 2>/dev/null || true
+            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" 2>/dev/null || true
+            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" 2>/dev/null || true
+        elif [ "$billing_mode" = "double" ]; then
+            # 双向统计：入站和出站都计入配额（各1次）
             nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name input udp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
@@ -1573,7 +1607,23 @@ apply_nftables_quota() {
 
         nft add quota $family $table_name $quota_name { over $quota_bytes bytes used $current_total bytes } 2>/dev/null || true
 
-        if [ "$billing_mode" = "double" ]; then
+        if [ "$billing_mode" = "relay" ]; then
+            # relay模式：入站累加1次，出站累加2次
+            nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name input udp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            # 出站双倍累加
+            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" 2>/dev/null || true
+            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" 2>/dev/null || true
+            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" 2>/dev/null || true
+            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" 2>/dev/null || true
+        elif [ "$billing_mode" = "double" ]; then
+            # 双向统计
             nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name input udp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
@@ -2564,12 +2614,10 @@ format_status_message() {
     local port_count=${#active_ports[@]}
     local daily_total=$(get_daily_total_traffic)
 
-    local message="<b>${notification_icon} 端口流量狗 v${SCRIPT_VERSION}</b>
-⏰ ${timestamp}
-作者主页:<code>https://zywe.de</code>
-项目开源:<code>https://github.com/zywe03/realm-xwPF</code>
+    local message="<b>${notification_icon} 端口流量狗 v${SCRIPT_VERSION}</b> | ⏰ ${timestamp}
+作者主页:<code>https://zywe.de</code> | 项目开源:<code>https://github.com/zywe03/realm-xwPF</code>
 一只轻巧的'守护犬'，时刻守护你的端口流量 | 快捷命令: dog
-
+---
 状态: 监控中 | 守护端口: ${port_count}个 | 端口总流量: ${daily_total}
 ────────────────────────────────────────
 <pre>$(format_port_list "message")</pre>
@@ -2588,12 +2636,10 @@ format_text_status_message() {
     local port_count=${#active_ports[@]}
     local daily_total=$(get_daily_total_traffic)
 
-    local message="${notification_icon} 端口流量狗 v${SCRIPT_VERSION}
-⏰ ${timestamp}
-作者主页: https://zywe.de
-项目开源: https://github.com/zywe03/realm-xwPF
+    local message="${notification_icon} 端口流量狗 v${SCRIPT_VERSION} | ⏰ ${timestamp}
+作者主页: https://zywe.de | 项目开源: https://github.com/zywe03/realm-xwPF
 一只轻巧的'守护犬'，时刻守护你的端口流量 | 快捷命令: dog
-
+---
 状态: 监控中 | 守护端口: ${port_count}个 | 端口总流量: ${daily_total}
 ────────────────────────────────────────
 $(format_port_list "message")
@@ -2612,12 +2658,10 @@ format_markdown_status_message() {
     local port_count=${#active_ports[@]}
     local daily_total=$(get_daily_total_traffic)
 
-    local message="**${notification_icon} 端口流量狗 v${SCRIPT_VERSION}**
-⏰ ${timestamp}
-作者主页: \`https://zywe.de\`
-项目开源: \`https://github.com/zywe03/realm-xwPF\`
+    local message="**${notification_icon} 端口流量狗 v${SCRIPT_VERSION}** | ⏰ ${timestamp}
+作者主页: \`https://zywe.de\` | 项目开源: \`https://github.com/zywe03/realm-xwPF\`
 一只轻巧的'守护犬'，时刻守护你的端口流量 | 快捷命令: dog
-
+---
 **状态**: 监控中 | **守护端口**: ${port_count}个 | **端口总流量**: ${daily_total}
 ────────────────────────────────────────
 $(format_port_list "markdown")
