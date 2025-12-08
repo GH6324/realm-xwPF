@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-readonly SCRIPT_VERSION="1.2.4"
+readonly SCRIPT_VERSION="1.2.5"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -182,7 +182,7 @@ init_config() {
         cat > "$CONFIG_FILE" << 'EOF'
 {
   "global": {
-    "billing_mode": "single"
+    "billing_mode": "double"
   },
   "ports": {},
   "nftables": {
@@ -405,18 +405,25 @@ get_nftables_counter_data() {
     local port=$1
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
+    local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
+
+    local input_bytes=0
+    local output_bytes=0
 
     if is_port_range "$port"; then
-        # 端口段使用下划线替换连字符作为计数器名称
         local port_safe=$(echo "$port" | tr '-' '_')
-        local input_bytes=$(nft list counter $family $table_name "port_${port_safe}_in" 2>/dev/null | \
-            grep -o 'bytes [0-9]*' | awk '{print $2}')
-        local output_bytes=$(nft list counter $family $table_name "port_${port_safe}_out" 2>/dev/null | \
+        if [ "$billing_mode" = "double" ]; then
+            input_bytes=$(nft list counter $family $table_name "port_${port_safe}_in" 2>/dev/null | \
+                grep -o 'bytes [0-9]*' | awk '{print $2}')
+        fi
+        output_bytes=$(nft list counter $family $table_name "port_${port_safe}_out" 2>/dev/null | \
             grep -o 'bytes [0-9]*' | awk '{print $2}')
     else
-        local input_bytes=$(nft list counter $family $table_name "port_${port}_in" 2>/dev/null | \
-            grep -o 'bytes [0-9]*' | awk '{print $2}')
-        local output_bytes=$(nft list counter $family $table_name "port_${port}_out" 2>/dev/null | \
+        if [ "$billing_mode" = "double" ]; then
+            input_bytes=$(nft list counter $family $table_name "port_${port}_in" 2>/dev/null | \
+                grep -o 'bytes [0-9]*' | awk '{print $2}')
+        fi
+        output_bytes=$(nft list counter $family $table_name "port_${port}_out" 2>/dev/null | \
             grep -o 'bytes [0-9]*' | awk '{print $2}')
     fi
 
@@ -484,12 +491,12 @@ restore_monitoring_if_needed() {
     for port in "${active_ports[@]}"; do
         if is_port_range "$port"; then
             local port_safe=$(echo "$port" | tr '-' '_')
-            if ! nft list counter $family $table_name "port_${port_safe}_in" >/dev/null 2>&1; then
+            if ! nft list counter $family $table_name "port_${port_safe}_out" >/dev/null 2>&1; then
                 need_restore=true
                 break
             fi
         else
-            if ! nft list counter $family $table_name "port_${port}_in" >/dev/null 2>&1; then
+            if ! nft list counter $family $table_name "port_${port}_out" >/dev/null 2>&1; then
                 need_restore=true
                 break
             fi
@@ -530,14 +537,18 @@ restore_counter_value() {
     local target_output=$3
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
+    local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
 
     if is_port_range "$port"; then
         local port_safe=$(echo "$port" | tr '-' '_')
-        # nftables支持创建带初始值的计数器
-        nft add counter $family $table_name "port_${port_safe}_in" { packets 0 bytes $target_input } 2>/dev/null || true
+        if [ "$billing_mode" = "double" ]; then
+            nft add counter $family $table_name "port_${port_safe}_in" { packets 0 bytes $target_input } 2>/dev/null || true
+        fi
         nft add counter $family $table_name "port_${port_safe}_out" { packets 0 bytes $target_output } 2>/dev/null || true
     else
-        nft add counter $family $table_name "port_${port}_in" { packets 0 bytes $target_input } 2>/dev/null || true
+        if [ "$billing_mode" = "double" ]; then
+            nft add counter $family $table_name "port_${port}_in" { packets 0 bytes $target_input } 2>/dev/null || true
+        fi
         nft add counter $family $table_name "port_${port}_out" { packets 0 bytes $target_output } 2>/dev/null || true
     fi
 }
@@ -580,20 +591,19 @@ restore_all_monitoring_rules() {
 calculate_total_traffic() {
     local input_bytes=$1
     local output_bytes=$2
-    local billing_mode=${3:-"single"}
+    local billing_mode=${3:-"double"}
     case $billing_mode in
         "double")
+            # 双向统计：input + output（计数器已在规则层面×2）
             echo $((input_bytes + output_bytes))
             ;;
-        "relay")
-            # 代理/中转模式：估算入站=In+Out，总流量=估算入站+Out=In+2*Out
-            echo $((input_bytes + output_bytes * 2))
-            ;;
         "single"|*)
+            # 单向统计：仅 output（计数器已在规则层面×2）
             echo $output_bytes
             ;;
     esac
 }
+
 
 get_port_status_label() {
     local port=$1
@@ -626,9 +636,7 @@ get_port_status_label() {
             local usage_percent=$((current_usage * 100 / limit_bytes))
 
             local quota_display="$monthly_limit"
-            if [ "$billing_mode" = "relay" ]; then
-                status_tags+=("[relay双向${quota_display}]")
-            elif [ "$billing_mode" = "double" ]; then
+            if [ "$billing_mode" = "double" ]; then
                 status_tags+=("[双向${quota_display}]")
             else
                 status_tags+=("[单向${quota_display}]")
@@ -655,9 +663,7 @@ get_port_status_label() {
                 status_tags+=("[已超限]")
             fi
         else
-            if [ "$billing_mode" = "relay" ]; then
-                status_tags+=("[relay双向无限制]")
-            elif [ "$billing_mode" = "double" ]; then
+            if [ "$billing_mode" = "double" ]; then
                 status_tags+=("[双向无限制]")
             else
                 status_tags+=("[单向无限制]")
@@ -680,7 +686,7 @@ get_port_monthly_usage() {
     local traffic_data=($(get_port_traffic "$port"))
     local input_bytes=${traffic_data[0]}
     local output_bytes=${traffic_data[1]}
-    local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"single\"" "$CONFIG_FILE")
+    local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
 
     calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode"
 }
@@ -801,7 +807,7 @@ get_daily_total_traffic() {
         local traffic_data=($(get_port_traffic "$port"))
         local input_bytes=${traffic_data[0]}
         local output_bytes=${traffic_data[1]}
-        local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"single\"" "$CONFIG_FILE")
+        local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
         local port_total=$(calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode")
         total_bytes=$(( total_bytes + port_total ))
     done
@@ -817,19 +823,14 @@ format_port_list() {
         local traffic_data=($(get_port_traffic "$port"))
         local input_bytes=${traffic_data[0]}
         local output_bytes=${traffic_data[1]}
-        local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"single\"" "$CONFIG_FILE")
+        local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
         local total_bytes=$(calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode")
         local total_formatted=$(format_bytes $total_bytes)
         local output_formatted=$(format_bytes $output_bytes)
         local status_label=$(get_port_status_label "$port")
 
-        # relay模式：入站显示为估算值(In+Out)，出站保持原值
-        if [ "$billing_mode" = "relay" ]; then
-            local input_estimated=$((input_bytes + output_bytes))
-            local input_formatted=$(format_bytes $input_estimated)
-        else
-            local input_formatted=$(format_bytes $input_bytes)
-        fi
+        local input_formatted=$(format_bytes $input_bytes)
+
 
         if [ "$format_type" = "display" ]; then
             echo -e "端口:${GREEN}$port${NC} | 总流量:${GREEN}$total_formatted${NC} | 上行(入站): ${GREEN}$input_formatted${NC} | 下行(出站):${GREEN}$output_formatted${NC} | ${YELLOW}$status_label${NC}"
@@ -856,8 +857,7 @@ show_main_menu() {
     local daily_total=$(get_daily_total_traffic)
 
     echo -e "${BLUE}=== 端口流量狗 v$SCRIPT_VERSION ===${NC}"
-    echo -e "${GREEN}作者主页:${NC}https://zywe.de"
-    echo -e "${GREEN}项目开源:${NC}https://github.com/zywe03/realm-xwPF"
+    echo -e "${GREEN}作者主页:${NC}https://zywe.de | ${GREEN}项目开源:${NC}https://github.com/zywe03/realm-xwPF"
     echo -e "${GREEN}一只轻巧的‘守护犬’，时刻守护你的端口流量 | 快捷命令: dog${NC}"
     echo
 
@@ -974,27 +974,22 @@ add_port_monitoring() {
 
     echo
     echo -e "${GREEN}说明:${NC}"
-    echo "1. 代理/中转模式双向统计（推荐用于relay/proxy场景）："
-    echo "   估算入站 = 入站 + 出站，总流量 = 估算入站 + 出站"
+    echo "1. 双向流量统计"
+    echo "   总流量 = in*2 + out*2"
     echo
-    echo "2. 单向流量统计模式："
-    echo "   总流量 = 只统计出站流量"
-    echo
-    echo "3. 双向流量统计(relay/proxy场景近似单向统计)："
-    echo "   总流量 = 入站流量 + 出站流量"
+    echo "2. 单向流量统计"
+    echo "   仅统计出站流量，总流量 = out*2"
     echo
     echo "请选择统计模式:"
-    echo "1. 代理/中转模式双向统计"
+    echo "1. 双向流量统计"
     echo "2. 单向流量统计"
-    echo "3. 双向流量统计"
-    read -p "请选择(回车默认1) [1-3]: " billing_choice
+    read -p "请选择(回车默认1) [1-2]: " billing_choice
 
-    local billing_mode="relay"
+    local billing_mode="double"
     case $billing_choice in
-        1|"") billing_mode="relay" ;;
+        1|"") billing_mode="double" ;;
         2) billing_mode="single" ;;
-        3) billing_mode="double" ;;
-        *) billing_mode="relay" ;;
+        *) billing_mode="double" ;;
     esac
 
     echo
@@ -1223,42 +1218,93 @@ add_nftables_rules() {
     local port=$1
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
+    local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
 
     if is_port_range "$port"; then
-        # 端口段：使用下划线替换连字符，添加标记用于TC分类
         local port_safe=$(echo "$port" | tr '-' '_')
         local mark_id=$(generate_port_range_mark "$port")
 
-        nft list counter $family $table_name "port_${port_safe}_in" >/dev/null 2>&1 || \
-            nft add counter $family $table_name "port_${port_safe}_in" 2>/dev/null || true
-        nft list counter $family $table_name "port_${port_safe}_out" >/dev/null 2>&1 || \
-            nft add counter $family $table_name "port_${port_safe}_out" 2>/dev/null || true
+        if [ "$billing_mode" = "double" ]; then
+            # 双向模式：创建 in 和 out 两个计数器，各绑定规则两次（×2）
+            nft list counter $family $table_name "port_${port_safe}_in" >/dev/null 2>&1 || \
+                nft add counter $family $table_name "port_${port_safe}_in" 2>/dev/null || true
+            nft list counter $family $table_name "port_${port_safe}_out" >/dev/null 2>&1 || \
+                nft add counter $family $table_name "port_${port_safe}_out" 2>/dev/null || true
 
-        # nftables原生端口段语法，同时设置标记
-        nft add rule $family $table_name input tcp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
-        nft add rule $family $table_name input udp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
-        nft add rule $family $table_name forward tcp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
-        nft add rule $family $table_name forward udp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
+            # in 计数器：绑定 input 规则两次（in × 2）
+            nft add rule $family $table_name input tcp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
+            nft add rule $family $table_name input udp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
+            nft add rule $family $table_name forward tcp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
+            nft add rule $family $table_name forward udp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
+            nft add rule $family $table_name input tcp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
+            nft add rule $family $table_name input udp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
+            nft add rule $family $table_name forward tcp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
+            nft add rule $family $table_name forward udp dport $port meta mark set $mark_id counter name "port_${port_safe}_in"
 
-        nft add rule $family $table_name output tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
-        nft add rule $family $table_name output udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
-        nft add rule $family $table_name forward tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
-        nft add rule $family $table_name forward udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
+            # out 计数器：绑定 output 规则两次（out × 2）
+            nft add rule $family $table_name output tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
+            nft add rule $family $table_name output udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
+            nft add rule $family $table_name forward tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
+            nft add rule $family $table_name forward udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
+            nft add rule $family $table_name output tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
+            nft add rule $family $table_name output udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
+            nft add rule $family $table_name forward tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
+            nft add rule $family $table_name forward udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
+        else
+            # 单向模式：只创建 out 计数器，绑定 output 规则两次（out × 2）
+            nft list counter $family $table_name "port_${port_safe}_out" >/dev/null 2>&1 || \
+                nft add counter $family $table_name "port_${port_safe}_out" 2>/dev/null || true
+
+            nft add rule $family $table_name output tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
+            nft add rule $family $table_name output udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
+            nft add rule $family $table_name forward tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
+            nft add rule $family $table_name forward udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
+            nft add rule $family $table_name output tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
+            nft add rule $family $table_name output udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
+            nft add rule $family $table_name forward tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
+            nft add rule $family $table_name forward udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
+        fi
     else
-        nft list counter $family $table_name "port_${port}_in" >/dev/null 2>&1 || \
-            nft add counter $family $table_name "port_${port}_in" 2>/dev/null || true
-        nft list counter $family $table_name "port_${port}_out" >/dev/null 2>&1 || \
-            nft add counter $family $table_name "port_${port}_out" 2>/dev/null || true
+        if [ "$billing_mode" = "double" ]; then
+            # 双向模式：创建 in 和 out 两个计数器
+            nft list counter $family $table_name "port_${port}_in" >/dev/null 2>&1 || \
+                nft add counter $family $table_name "port_${port}_in" 2>/dev/null || true
+            nft list counter $family $table_name "port_${port}_out" >/dev/null 2>&1 || \
+                nft add counter $family $table_name "port_${port}_out" 2>/dev/null || true
 
-        nft add rule $family $table_name input tcp dport $port counter name "port_${port}_in"
-        nft add rule $family $table_name input udp dport $port counter name "port_${port}_in"
-        nft add rule $family $table_name forward tcp dport $port counter name "port_${port}_in"
-        nft add rule $family $table_name forward udp dport $port counter name "port_${port}_in"
+            # in 计数器：绑定 input 规则两次（in × 2）
+            nft add rule $family $table_name input tcp dport $port counter name "port_${port}_in"
+            nft add rule $family $table_name input udp dport $port counter name "port_${port}_in"
+            nft add rule $family $table_name forward tcp dport $port counter name "port_${port}_in"
+            nft add rule $family $table_name forward udp dport $port counter name "port_${port}_in"
+            nft add rule $family $table_name input tcp dport $port counter name "port_${port}_in"
+            nft add rule $family $table_name input udp dport $port counter name "port_${port}_in"
+            nft add rule $family $table_name forward tcp dport $port counter name "port_${port}_in"
+            nft add rule $family $table_name forward udp dport $port counter name "port_${port}_in"
 
-        nft add rule $family $table_name output tcp sport $port counter name "port_${port}_out"
-        nft add rule $family $table_name output udp sport $port counter name "port_${port}_out"
-        nft add rule $family $table_name forward tcp sport $port counter name "port_${port}_out"
-        nft add rule $family $table_name forward udp sport $port counter name "port_${port}_out"
+            # out 计数器：绑定 output 规则两次（out × 2）
+            nft add rule $family $table_name output tcp sport $port counter name "port_${port}_out"
+            nft add rule $family $table_name output udp sport $port counter name "port_${port}_out"
+            nft add rule $family $table_name forward tcp sport $port counter name "port_${port}_out"
+            nft add rule $family $table_name forward udp sport $port counter name "port_${port}_out"
+            nft add rule $family $table_name output tcp sport $port counter name "port_${port}_out"
+            nft add rule $family $table_name output udp sport $port counter name "port_${port}_out"
+            nft add rule $family $table_name forward tcp sport $port counter name "port_${port}_out"
+            nft add rule $family $table_name forward udp sport $port counter name "port_${port}_out"
+        else
+            # 单向模式：只创建 out 计数器，绑定 output 规则两次（out × 2）
+            nft list counter $family $table_name "port_${port}_out" >/dev/null 2>&1 || \
+                nft add counter $family $table_name "port_${port}_out" 2>/dev/null || true
+
+            nft add rule $family $table_name output tcp sport $port counter name "port_${port}_out"
+            nft add rule $family $table_name output udp sport $port counter name "port_${port}_out"
+            nft add rule $family $table_name forward tcp sport $port counter name "port_${port}_out"
+            nft add rule $family $table_name forward udp sport $port counter name "port_${port}_out"
+            nft add rule $family $table_name output tcp sport $port counter name "port_${port}_out"
+            nft add rule $family $table_name output udp sport $port counter name "port_${port}_out"
+            nft add rule $family $table_name forward tcp sport $port counter name "port_${port}_out"
+            nft add rule $family $table_name forward udp sport $port counter name "port_${port}_out"
+        fi
     fi
 }
 
@@ -1266,8 +1312,6 @@ remove_nftables_rules() {
     local port=$1
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
-
-    echo "删除端口 $port 的所有规则..."
 
     if is_port_range "$port"; then
         local port_safe=$(echo "$port" | tr '-' '_')
@@ -1285,30 +1329,22 @@ remove_nftables_rules() {
             sed -n 's/.*# handle \([0-9]\+\)$/\1/p')
 
         if [ -z "$handle" ]; then
-            echo "没有更多匹配的规则，共删除 $deleted_count 条规则"
             break
         fi
 
-        local deleted=false
         for chain in input output forward; do
             if nft delete rule $family $table_name $chain handle $handle 2>/dev/null; then
-                echo "已删除规则 handle $handle (链: $chain)"
                 deleted_count=$((deleted_count + 1))
-                deleted=true
                 break
             fi
         done
 
-        if [ "$deleted" = false ]; then
-            echo "删除规则 handle $handle 失败，跳过"
-        fi
-
-        if [ $deleted_count -ge 100 ]; then
-            echo "已删除100条规则，停止删除以防无限循环"
+        if [ $deleted_count -ge 150 ]; then
             break
         fi
     done
 
+    # 删除计数器
     if is_port_range "$port"; then
         local port_safe=$(echo "$port" | tr '-' '_')
         nft delete counter $family $table_name "port_${port_safe}_in" 2>/dev/null || true
@@ -1317,8 +1353,6 @@ remove_nftables_rules() {
         nft delete counter $family $table_name "port_${port}_in" 2>/dev/null || true
         nft delete counter $family $table_name "port_${port}_out" 2>/dev/null || true
     fi
-
-    echo "端口 $port 的规则删除完成"
 }
 
 set_port_bandwidth_limit() {
@@ -1535,16 +1569,109 @@ manage_traffic_limits() {
     echo -e "${BLUE}=== 端口限制设置管理 ===${NC}"
     echo "1. 设置端口带宽限制（速率控制）"
     echo "2. 设置端口流量配额（总量控制）"
+    echo "3. 修改端口统计方式（双向/单向）"
     echo "0. 返回主菜单"
     echo
-    read -p "请选择操作 [0-2]: " choice
+    read -p "请选择操作 [0-3]: " choice
 
     case $choice in
         1) set_port_bandwidth_limit ;;
         2) set_port_quota_limit ;;
+        3) change_port_billing_mode ;;
         0) show_main_menu ;;
         *) echo -e "${RED}无效选择${NC}"; sleep 1; manage_traffic_limits ;;
     esac
+}
+
+# 修改端口计费模式（流量数据不丢失）
+change_port_billing_mode() {
+    echo -e "${BLUE}=== 修改端口统计方式 ===${NC}"
+    
+    local active_ports=$(jq -r '.ports | keys[]' "$CONFIG_FILE" 2>/dev/null | sort -n)
+    if [ -z "$active_ports" ]; then
+        echo -e "${RED}没有正在监控的端口${NC}"
+        sleep 2
+        manage_traffic_limits
+        return
+    fi
+    
+    echo -e "${YELLOW}当前监控的端口列表：${NC}"
+    local port_list=()
+    local idx=1
+    for port in $active_ports; do
+        local current_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
+        local mode_display=$([ "$current_mode" = "double" ] && echo "双向" || echo "单向")
+        echo -e "  $idx. 端口 $port - 当前模式: ${BLUE}${mode_display}${NC}"
+        port_list+=("$port")
+        ((idx++))
+    done
+    echo "  0. 返回上级菜单"
+    echo
+    
+    read -p "请选择要修改的端口 [0-$((idx-1))]: " port_choice
+    
+    if [ "$port_choice" = "0" ]; then
+        manage_traffic_limits
+        return
+    fi
+    
+    if ! [[ "$port_choice" =~ ^[0-9]+$ ]] || [ "$port_choice" -lt 1 ] || [ "$port_choice" -gt ${#port_list[@]} ]; then
+        echo -e "${RED}无效选择${NC}"
+        sleep 1
+        change_port_billing_mode
+        return
+    fi
+    
+    local target_port="${port_list[$((port_choice-1))]}"
+    local current_mode=$(jq -r ".ports.\"$target_port\".billing_mode // \"double\"" "$CONFIG_FILE")
+    local current_display=$([ "$current_mode" = "double" ] && echo "双向" || echo "单向")
+    local new_mode=$([ "$current_mode" = "double" ] && echo "single" || echo "double")
+    local new_display=$([ "$new_mode" = "double" ] && echo "双向" || echo "单向")
+    
+    echo
+    read -p "端口 $target_port 当前统计方式: $current_display，是否修改为 $new_display 统计? (y/N): " confirm
+    
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}已取消${NC}"
+        sleep 1
+        change_port_billing_mode
+        return
+    fi
+    
+    echo
+    echo -e "${YELLOW}正在切换...${NC}"
+    
+    # 读取当前流量
+    local traffic_data=($(get_port_traffic "$target_port"))
+    local saved_input=${traffic_data[0]:-0}
+    local saved_output=${traffic_data[1]:-0}
+    echo -e "  读取流量: 上行=$(format_bytes $saved_input), 下行=$(format_bytes $saved_output)"
+    
+    # 删除旧规则
+    remove_nftables_rules "$target_port"
+    
+    # 更新配置
+    local tmp_file=$(mktemp)
+    jq ".ports.\"$target_port\".billing_mode = \"$new_mode\"" "$CONFIG_FILE" > "$tmp_file"
+    mv "$tmp_file" "$CONFIG_FILE"
+    
+    # 创建带初始值的计数器（复用灾备恢复函数）
+    restore_counter_value "$target_port" "$saved_input" "$saved_output"
+    
+    # 添加规则（计数器已存在，会被复用）
+    add_nftables_rules "$target_port"
+    
+    # 重新应用配额（apply_nftables_quota 会先删除旧配额对象再创建新的）
+    local quota_enabled=$(jq -r ".ports.\"$target_port\".quota.enabled // false" "$CONFIG_FILE")
+    local quota_limit=$(jq -r ".ports.\"$target_port\".quota.monthly_limit // \"\"" "$CONFIG_FILE")
+    if [ "$quota_enabled" = "true" ] && [ -n "$quota_limit" ] && [ "$quota_limit" != "null" ] && [ "$quota_limit" != "unlimited" ]; then
+        apply_nftables_quota "$target_port" "$quota_limit"
+    fi
+    
+    echo -e "${GREEN}✓ 已切换为: ${new_display}，流量数据已保留${NC}"
+    sleep 2
+    
+    change_port_billing_mode
 }
 
 apply_nftables_quota() {
@@ -1552,7 +1679,7 @@ apply_nftables_quota() {
     local quota_limit=$2
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
-    local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"single\"" "$CONFIG_FILE")
+    local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
 
     local quota_bytes=$(parse_size_to_bytes "$quota_limit")
 
@@ -1566,37 +1693,36 @@ apply_nftables_quota() {
         local port_safe=$(echo "$port" | tr '-' '_')
         local quota_name="port_${port_safe}_quota"
 
+        # 确保幂等：先删除现有配额对象（如果存在）
+        nft delete quota $family $table_name $quota_name 2>/dev/null || true
         nft add quota $family $table_name $quota_name { over $quota_bytes bytes used $current_total bytes } 2>/dev/null || true
 
-        if [ "$billing_mode" = "relay" ]; then
-            # relay模式：入站累加1次，出站累加2次（双规则实现）
-            # 入站：只需quota drop规则（累加1次）
+        if [ "$billing_mode" = "double" ]; then
+            # 双向模式：配额规则与计数器一致，input×2 + output×2
+            # input×2
             nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name input udp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            # 出站：先insert drop规则，后insert普通规则（执行顺序：普通→drop，累加2次）
+            nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name input udp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            # output×2
             nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            # 额外的普通quota规则（会排在drop前面执行，实现出站×2累加）
-            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" 2>/dev/null || true
-        elif [ "$billing_mode" = "double" ]; then
-            # 双向统计：入站和出站都计入配额（各1次）
-            nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name input udp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
         else
-            # 单向统计：仅出站计入配额
+            # 单向模式：只绑定 output×2
+            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
@@ -1605,34 +1731,36 @@ apply_nftables_quota() {
     else
         local quota_name="port_${port}_quota"
 
+        # 确保幂等：先删除现有配额对象（如果存在）
+        nft delete quota $family $table_name $quota_name 2>/dev/null || true
         nft add quota $family $table_name $quota_name { over $quota_bytes bytes used $current_total bytes } 2>/dev/null || true
 
-        if [ "$billing_mode" = "relay" ]; then
-            # relay模式：入站累加1次，出站累加2次
+        if [ "$billing_mode" = "double" ]; then
+            # 双向模式：配额规则与计数器一致，input×2 + output×2
+            # input×2
             nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name input udp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            # 出站双倍累加
+            nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name input udp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" drop 2>/dev/null || true
+            # output×2
             nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" 2>/dev/null || true
-            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" 2>/dev/null || true
-        elif [ "$billing_mode" = "double" ]; then
-            # 双向统计
-            nft insert rule $family $table_name input tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name input udp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp dport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward udp dport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
         else
+            # 单向模式：只绑定 output×2
+            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
@@ -1647,15 +1775,11 @@ remove_nftables_quota() {
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
 
-    echo "删除端口 $port 的配额规则..."
-
     # 检查是否为端口段
     if is_port_range "$port"; then
-        # 端口段处理
         local port_safe=$(echo "$port" | tr '-' '_')
         local quota_name="port_${port_safe}_quota"
     else
-        # 单个端口处理
         local quota_name="port_${port}_quota"
     fi
 
@@ -1669,34 +1793,22 @@ remove_nftables_quota() {
             sed -n 's/.*# handle \([0-9]\+\)$/\1/p')
 
         if [ -z "$handle" ]; then
-            echo "没有更多匹配的配额规则，共删除 $deleted_count 条规则"
             break
         fi
 
-        # 删除找到的handle - 需要指定链名
-        local deleted=false
         for chain in input output forward; do
             if nft delete rule $family $table_name $chain handle $handle 2>/dev/null; then
-                echo "已删除配额规则 handle $handle (链: $chain)"
                 deleted_count=$((deleted_count + 1))
-                deleted=true
                 break
             fi
         done
 
-        if [ "$deleted" = false ]; then
-            echo "删除配额规则 handle $handle 失败，跳过"
-        fi
-
-        if [ $deleted_count -ge 100 ]; then
-            echo "已删除100条配额规则，停止删除以防无限循环"
+        if [ $deleted_count -ge 150 ]; then
             break
         fi
     done
 
     nft delete quota $family $table_name "$quota_name" 2>/dev/null || true
-
-    echo "端口 $port 的配额限制删除完成"
 }
 
 apply_tc_limit() {
@@ -1773,8 +1885,6 @@ remove_tc_limit() {
 
     tc class del dev $interface classid $class_id 2>/dev/null || true
 }
-
-
 
 manage_traffic_reset() {
     echo -e "${BLUE}流量重置管理${NC}"
@@ -1960,7 +2070,7 @@ auto_reset_port() {
     local traffic_data=($(get_port_traffic "$port"))
     local input_bytes=${traffic_data[0]}
     local output_bytes=${traffic_data[1]}
-    local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"single\"" "$CONFIG_FILE")
+    local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
     local total_bytes=$(calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode")
 
     reset_port_nftables_counters "$port"
@@ -1981,7 +2091,6 @@ reset_port_nftables_counters() {
         local port_safe=$(echo "$port" | tr '-' '_')
         nft reset counter $family $table_name "port_${port_safe}_in" >/dev/null 2>&1 || true
         nft reset counter $family $table_name "port_${port_safe}_out" >/dev/null 2>&1 || true
-        # 重置配额使用量，保持限制不变
         nft reset quota $family $table_name "port_${port_safe}_quota" >/dev/null 2>&1 || true
     else
         nft reset counter $family $table_name "port_${port}_in" >/dev/null 2>&1 || true
