@@ -2173,9 +2173,8 @@ export_config() {
     # 复制配置目录到临时位置
     cp -r "$CONFIG_DIR" "$package_dir"
 
-    # 生成配置包信息文件
+    # 生成端口流量狗配置包信息文件
     cat > "$package_dir/package_info.txt" << EOF
-端口流量狗配置包信息
 ===================
 导出时间: $(get_beijing_time '+%Y-%m-%d %H:%M:%S')
 脚本版本: $SCRIPT_VERSION
@@ -2193,14 +2192,14 @@ EOF
 
     if [ -f "$backup_path" ]; then
         local file_size=$(du -h "$backup_path" | cut -f1)
-        echo -e "${GREEN}✅ 配置包导出成功${NC}"
+        echo -e "${GREEN}配置包导出成功${NC}"
         echo
-        echo "📦 文件信息："
+        echo "文件信息："
         echo "  文件名: $backup_name"
         echo "  路径: $backup_path"
         echo "  大小: $file_size"
     else
-        echo -e "${RED}❌ 配置包导出失败${NC}"
+        echo -e "${RED}配置包导出失败${NC}"
     fi
 
     echo
@@ -2283,23 +2282,23 @@ import_config() {
         return
     fi
 
-    # 显示配置包信息
-    echo -e "${GREEN}✅ 配置包验证通过${NC}"
+    # 显示端口流量狗配置包信息
+    echo -e "${GREEN}配置包验证通过${NC}"
     echo
 
     if [ -f "$extracted_config/package_info.txt" ]; then
-        echo "📋 配置包信息："
+        echo -e "${GREEN}端口流量狗配置包信息：${NC}"
         cat "$extracted_config/package_info.txt"
         echo
     fi
 
     # 显示将要导入的端口
     local import_ports=$(jq -r '.ports | keys | join(", ")' "$extracted_config/config.json" 2>/dev/null || echo "无")
-    echo "📊 包含端口: $import_ports"
+    echo "包含端口: $import_ports"
     echo
 
     # 确认导入
-    echo -e "${YELLOW}⚠️  警告：导入配置将会：${NC}"
+    echo -e "${YELLOW}警告：导入配置将会：${NC}"
     echo "  1. 停止当前所有端口监控"
     echo "  2. 替换为新的配置"
     echo "  3. 重新应用监控规则"
@@ -2463,15 +2462,15 @@ install_update_script() {
             echo -e "${YELLOW}正在更新通知模块...${NC}"
             download_notification_modules >/dev/null 2>&1 || true
 
-            echo -e "${GREEN}✅ 依赖检查完成${NC}"
-            echo -e "${GREEN}✅ 脚本更新完成${NC}"
-            echo -e "${GREEN}✅ 通知模块已更新${NC}"
+            echo -e "${GREEN}依赖检查完成${NC}"
+            echo -e "${GREEN}脚本更新完成${NC}"
+            echo -e "${GREEN}通知模块已更新${NC}"
         else
-            echo -e "${RED}❌ 下载文件验证失败${NC}"
+            echo -e "${RED} 下载文件验证失败${NC}"
             rm -f "$temp_file"
         fi
     else
-        echo -e "${RED}❌ 下载失败，请检查网络连接${NC}"
+        echo -e "${RED} 下载失败，请检查网络连接${NC}"
         rm -f "$temp_file"
     fi
 
