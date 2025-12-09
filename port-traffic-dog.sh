@@ -1625,21 +1625,28 @@ change_port_billing_mode() {
     local target_port="${port_list[$((port_choice-1))]}"
     local current_mode=$(jq -r ".ports.\"$target_port\".billing_mode // \"double\"" "$CONFIG_FILE")
     local current_display=$([ "$current_mode" = "double" ] && echo "双向" || echo "单向")
-    local new_mode=$([ "$current_mode" = "double" ] && echo "single" || echo "double")
+    
+    echo
+    echo -e "端口 $target_port 当前统计方式: ${BLUE}$current_display${NC}"
+    echo
+    echo "1. 双向流量统计"
+    echo "2. 单向流量统计"
+    echo "0. 取消"
+    echo
+    read -p "请选择统计模式 [0-2]: " mode_choice
+    
+    local new_mode=""
+    case $mode_choice in
+        1) new_mode="double" ;;
+        2) new_mode="single" ;;
+        0|"") change_port_billing_mode; return ;;
+        *) echo -e "${RED}无效选择${NC}"; sleep 1; change_port_billing_mode; return ;;
+    esac
+    
     local new_display=$([ "$new_mode" = "double" ] && echo "双向" || echo "单向")
     
     echo
-    read -p "端口 $target_port 当前统计方式: $current_display，是否修改为 $new_display 统计? (y/N): " confirm
-    
-    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-        echo -e "${YELLOW}已取消${NC}"
-        sleep 1
-        change_port_billing_mode
-        return
-    fi
-    
-    echo
-    echo -e "${YELLOW}正在切换...${NC}"
+    echo -e "${YELLOW}正在应用 $new_display 模式...${NC}"
     
     # 读取当前流量
     local traffic_data=($(get_port_traffic "$target_port"))
@@ -1668,7 +1675,7 @@ change_port_billing_mode() {
         apply_nftables_quota "$target_port" "$quota_limit"
     fi
     
-    echo -e "${GREEN}✓ 已切换为: ${new_display}，流量数据已保留${NC}"
+    echo -e "${GREEN}✓ 已应用 $new_display 模式，流量数据已保留${NC}"
     sleep 2
     
     change_port_billing_mode
