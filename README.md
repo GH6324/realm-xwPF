@@ -288,7 +288,6 @@ IP地址：MPTCP协议需要知道可以使用哪些IP地址建立子流
 | `wget` | 备用下载工具 |
 | `tar` | 解压缩工具 |
 | `unzip` | ZIP解压缩 |
-| `systemctl` |总指挥协调工作 |
 | `bc` | 数值计算 |
 | `nc` | 网络连接测试 |
 | `grep`/`cut` | 文本处理识别 |
@@ -312,7 +311,7 @@ IP地址：MPTCP协议需要知道可以使用哪些IP地址建立子流
 │   └── dog                      # 端口流量犬快捷命令
 │
 ├── /etc/realm/                  # Realm配置目录
-│   ├── manager.conf             # 状态管理文件（核心）
+│   ├── manager.conf             # 状态管理文件
 │   ├── config.json              # Realm 工作配置文件
 │   ├── rules/                   # 转发规则目录
 │   │   ├── rule-1.conf          # 规则1配置
@@ -323,16 +322,11 @@ IP地址：MPTCP协议需要知道可以使用哪些IP地址建立子流
 │
 ├── /etc/port-traffic-dog/       # 端口流量犬配置目录
 │   ├── config.json              # 流量监控配置文件
-│   ├── data/                    # 流量数据目录
-│   │   ├── traffic_2024-01.json # 月度流量数据
-│   │   └── ...
-│   ├── snapshots/               # 流量快照目录
-│   │   ├── snapshot_20240115.json # 日度快照数据
-│   │   └── ...
+│   ├── traffic_data.json        # 流量备份数据（重启恢复用）
 │   ├── notifications/           # 通知模块目录
 │   │   └── telegram.sh          # Telegram通知模块
 │   └── logs/                    # 日志目录
-│       └── notification.log     # 通知日志
+│       └── traffic.log          # 流量日志
 │
 ├── /etc/systemd/system/
 │   ├── realm.service            # 主服务文件
@@ -349,7 +343,7 @@ IP地址：MPTCP协议需要知道可以使用哪些IP地址建立子流
 ## 🤝 技术支持
 
 - **其他开源项目：** [https://github.com/zywe03](https://github.com/zywe03)
-- **作者主页：** [https://zywe.de](https://zywe.de)
+- **介绍主页：** [https://zywe.de](https://zywe.de)
 - **问题反馈：** [GitHub Issues](https://github.com/zywe03/realm-xwPF/issues)
 - **纯闲聊群** [tg交流群](https://t.me/zywe_chat) 
 

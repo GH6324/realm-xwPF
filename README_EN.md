@@ -323,16 +323,11 @@ File organization structure after installation:
 │
 ├── /etc/port-traffic-dog/       # Port traffic monitor configuration directory
 │   ├── config.json              # Traffic monitoring configuration file
-│   ├── data/                    # Traffic data directory
-│   │   ├── traffic_2024-01.json # Monthly traffic data
-│   │   └── ...
-│   ├── snapshots/               # Traffic snapshot directory
-│   │   ├── snapshot_20240115.json # Daily snapshot data
-│   │   └── ...
+│   ├── traffic_data.json        # Traffic backup data (for restart recovery)
 │   ├── notifications/           # Notification module directory
 │   │   └── telegram.sh          # Telegram notification module
 │   └── logs/                    # Log directory
-│       └── notification.log     # Notification log
+│       └── traffic.log          # Traffic log
 │
 ├── /etc/systemd/system/
 │   ├── realm.service            # Main service file
