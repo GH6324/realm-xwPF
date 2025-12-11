@@ -1,34 +1,23 @@
-# realm Full-Featured One-Click Network Forwarding Management, Pure Script Quick Relay Server Setup
+# Realm Full-Featured One-Click Network Forwarding Management, Pure Script Quick Relay Server Setup
 
 [中文](README.md) | [English](README_EN.md) | [Port Traffic Dog Introduction](port-traffic-dog-README.md)
 
 ---
 
-> 🚀 **Network Forwarding Management Script** - Integrates all features of the latest official realm version, network link testing, port traffic dog, maintains extreme simplicity, visual rule operations to improve efficiency, pure script builds network forwarding service
+> 🚀 **Network Forwarding Management Script** - Syncs with all features of the latest official Realm version, network link testing, port traffic dog, maintains minimalist essence, visual rule operations for improved efficiency, pure script for building network forwarding services
 
 ## Script Interface Preview
 
 <details>
 <summary>Click to view interface screenshots</summary>
 
-### xwPF.sh realm forwarding script
+### xwPF.sh Realm Forwarding Script
 
-**Main Interface**
-![bc670bfc66faa167f43ac261184415c9.png](https://i.mji.rip/2025/08/28/bc670bfc66faa167f43ac261184415c9.png)
-
-**Forwarding Configuration Management**
-![91b443454ee6bbbb0926c1f2b33e8727.png](https://i.mji.rip/2025/08/28/91b443454ee6bbbb0926c1f2b33e8727.png)
-
-**Load Balancing & Failover**
-![Load Balancing + Failover](https://i.mji.rip/2025/07/17/e545e7ee444a0a2aa3592d080678696c.png)
-
-**MPTCP Settings Interface**
-![ead4f6fe61a1f3128a6b9f18dadf6a63.png](https://i.mji.rip/2025/08/28/ead4f6fe61a1f3128a6b9f18dadf6a63.png)
+![81ce7ea9e40068f6fda04b66ca3bd1ff.gif](https://i.mji.rip/2025/12/12/81ce7ea9e40068f6fda04b66ca3bd1ff.gif)
 
 ### Port Traffic Dog
 
-**Main Interface**
-![1e811dd521314e01a2e533b72580c7a4.png](https://i.mji.rip/2025/08/28/1e811dd521314e01a2e533b72580c7a4.png)
+![cc59017896d277a8b35109ae44eac977.gif](https://i.mji.rip/2025/12/12/cc59017896d277a8b35109ae44eac977.gif)
 
 ### Relay Network Link Testing Script
 ```
@@ -96,71 +85,71 @@ Test completion time: 2025-08-28 20:12:29 | Script open source: https://github.c
 wget -qO- https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xwPF.sh | sudo bash -s install
 ```
 
-### Network Restricted Use Accelerated Source, One-Click Installation
+### Network Restricted? Use Accelerated Mirror
 
 ```bash
 wget -qO- https://ghfast.top/https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xwPF.sh | sudo bash -s install
 ```
 
-## Offline Installation for No Network Access
+## Offline Installation (No Network Access)
 
 <details>
 <summary>Click to expand offline installation methods</summary>
 
-Suitable for completely network-disconnected environments
+For completely network-disconnected environments
 
 **Download Required Files**
 
 Download the following files on a device with network access:
-- **Script File Download**: [xwPF.sh](https://github.com/zywe03/realm-xwPF/raw/main/xwPF.sh) (Right-click → Save as)
-- **Realm Program Download** (choose according to system architecture):
+- **Script File**: [xwPF.sh](https://github.com/zywe03/realm-xwPF/raw/main/xwPF.sh) (Right-click → Save as)
+- **Realm Binary** (choose based on system architecture):
 
 | Architecture | Applicable Systems | Download Link | Detection Command |
 |--------------|-------------------|---------------|-------------------|
 | x86_64 | Common 64-bit systems | [realm-x86_64-unknown-linux-gnu.tar.gz](https://github.com/zhboner/realm/releases/download/v2.7.0/realm-x86_64-unknown-linux-gnu.tar.gz) | `uname -m` shows `x86_64` |
 | aarch64 | ARM64 systems | [realm-aarch64-unknown-linux-gnu.tar.gz](https://github.com/zhboner/realm/releases/download/v2.7.0/realm-aarch64-unknown-linux-gnu.tar.gz) | `uname -m` shows `aarch64` |
-| armv7 | ARM32 systems (like Raspberry Pi) | [realm-armv7-unknown-linux-gnueabihf.tar.gz](https://github.com/zhboner/realm/releases/download/v2.7.0/realm-armv7-unknown-linux-gnueabihf.tar.gz) | `uname -m` shows `armv7l` or `armv6l` |
+| armv7 | ARM32 systems (e.g., Raspberry Pi) | [realm-armv7-unknown-linux-gnueabihf.tar.gz](https://github.com/zhboner/realm/releases/download/v2.7.0/realm-armv7-unknown-linux-gnueabihf.tar.gz) | `uname -m` shows `armv7l` or `armv6l` |
 
-Create any directory to place the script and compressed package files. When starting with bash command and selecting **1. Install Configuration**, it will automatically detect and install the **realm file in the script's directory** first.
+Create any directory to place the script and archive files (do not place archives in `/usr/local/bin/`). When starting with bash and selecting **1. Install Configuration**, it will prompt: **Enter full path for offline realm installation (press Enter for auto-download):**
 
 </details>
 
 ## ✨ Core Features
 
-- **Quick Experience** - One-click installation for quick lightweight hands-on experience with network forwarding
-- **Failover** - Uses system tools to achieve automatic failure detection while maintaining lightweight design
+- **Quick Start** - One-click installation for lightweight hands-on experience with network forwarding
+- **Failover** - Uses system tools for automatic failure detection while staying lightweight
 - **Load Balancing** - Supports round-robin, IP hash strategies with configurable weight distribution
-- **Tunnel Building** - Dual-realm architecture supports TLS, ws encrypted transmission for tunnel construction
-- **Rule Comments** - Clear commenting functionality, no need for additional memorization
-- **Port Traffic Dog** - Statistics port traffic, control port speed limiting, flow control, configurable notification methods
-- **Intuitive MPTCP System Configuration** - Clear MPTCP interface display
-- **Network Link Script** - Test link latency, bandwidth, stability, large packet routing (based on hping3 & iperf3 & nexttrace & bgp.tools)
+- **Tunnel Building** - Dual-realm architecture supports TLS, ws, wss for tunnel construction
+- **Rule Comments** - Clear commenting functionality, no need for extra memorization
+- **Port Traffic Dog** - Monitor port traffic, control speed limits, throttling, with configurable notifications
+- **Intuitive MPTCP Configuration** - Clean MPTCP interface display
+- **Network Link Script** - Test latency, bandwidth, stability, large packet routing (based on hping3 & iperf3 & nexttrace & bgp.tools)
 
-- **One-Click Export** - Package all files into compressed archive for free migration (including comments and all information for complete migration)
-- **One-Click Import** - Recognize exported compressed packages for complete free migration
-- **One-click recognition and import** of custom Realm configuration files; scripts can be recognized and imported
-- **Smart detection** - Automatically detects system architecture, port conflicts, and connection availability
+- **One-Click Export** - Package all files into compressed archive for seamless migration (including comments and all data)
+- **One-Click Import** - Recognize exported packages for complete migration
+- **Batch Import Recognition** - Import custom Realm rule configurations for easy rule set management
+- **Smart Detection** - Automatically detects system architecture, port conflicts, and connection availability
 
-- **Intelligent Log Management** - Automatic log size limitation to prevent excessive disk usage
 - **Complete Uninstallation** - Phased comprehensive cleanup, "I leave gently, just as I came gently"
-- **Full Native Realm Functionality** - Supports all native features of the latest realm version
-- tcp/udp protocols
-- ws/wss/tls encryption
-- Single relay to multiple exits
-- Multiple relays to single exit
-- Proxy Protocol
-- MPTCP
-- Specify a specific entry IP for the relay server and a specific exit IP (suitable for multi-IP situations and one-entry-multiple-exits and multiple-entries-one-exit scenarios)
-- More usage patterns refer to [zhboner/realm](https://github.com/zhboner/realm)
+- **Full Native Realm Functionality** - Syncs with all native features of the latest Realm version
+  - TCP/UDP protocols
+  - ws/wss/tls encryption and forwarding
+  - Single relay to multiple exits
+  - Multiple relays to single exit
+  - Proxy Protocol
+  - MPTCP
+  - Specify relay server entry IP or exit IP (for multi-IP scenarios, one-entry-multiple-exits, multiple-entries-one-exit)
+  - Specify relay server entry interface or exit interface (for multi-NIC scenarios)
+  - More usage patterns at [zhboner/realm](https://github.com/zhboner/realm)
 
-## Diagrams to Understand Working Principles in Different Scenarios (Recommended Reading)
+## Diagrams for Understanding Different Scenarios (Recommended Reading)
 
 <details>
-<summary><strong>Single-end realm architecture only responsible for forwarding (common)</strong></summary>
+<summary><strong>Single-end Realm Architecture: Forwarding Only (Common)</strong></summary>
 
-Relay server installs realm, exit server installs business software
+Relay server installs Realm, exit server installs business software
 
-Relay server realm only forwards data packets received on the configured listening IP:port to the exit server as-is, encryption/decryption is handled by business software
+Relay server Realm forwards data packets received on the configured listen IP:port to the exit server as-is; encryption/decryption is handled by business software
 
 So the encryption protocol for the entire link is determined by the exit server's business software
 
@@ -169,13 +158,13 @@ So the encryption protocol for the entire link is determined by the exit server'
 </details>
 
 <details>
-<summary><strong>Dual-end realm architecture building tunnels</strong></summary>
+<summary><strong>Dual-end Realm Architecture: Building Tunnels</strong></summary>
 
-Relay server installs realm, exit server needs to install realm and business software
+Relay server installs Realm, exit server needs both Realm and business software
 
-An additional layer of realm-supported encrypted transmission is added between realm instances
+An additional layer of Realm-supported encrypted transmission is added between Realm instances
 
-#### So the encryption chosen by relay server realm, masquerading domains, etc., must be consistent with the exit server, otherwise decryption will fail
+#### Therefore, encryption settings, masquerading domains, etc. on the relay server must match the exit server, otherwise decryption will fail
 
 ![4c1f0d860cd89ca79f4234dd23f81316.png](https://i.mji.rip/2025/07/17/4c1f0d860cd89ca79f4234dd23f81316.png)
 
@@ -190,23 +179,23 @@ An additional layer of realm-supported encrypted transmission is added between r
 - Frontend > Multiple Relays > Single Exit
 ![2cbc533ade11a8bcbbe63720921e9e05.png](https://i.mji.rip/2025/07/17/2cbc533ade11a8bcbbe63720921e9e05.png)
 
-- `Round Robin` mode (roundrobin)
+- `Round Robin` mode
 
-Continuously switches between exit servers in the rule group
+Continuously rotates between exit servers in the rule group
 
-- `IP Hash` mode (iphash)
+- `IP Hash` mode
 
 Based on source IP hash value, determines traffic direction, ensuring requests from the same IP always go to the same exit server
 
-- Weight represents allocation probability
+- Weight equals allocation probability
 
 - Failover
 
-When a certain exit is detected as failed, it's temporarily removed from the load balancing list. After recovery, it will be automatically added back to the load balancing list
+When an exit is detected as failed, it's temporarily removed from the load balancing pool. After recovery, it's automatically added back
 
-Native realm currently does not support failover
+Native Realm currently does not support failover
 
-- Script's Implementation Principle
+- Script Implementation
 ```
 1. systemd timer trigger (every 4 seconds)
    ↓
@@ -214,9 +203,9 @@ Native realm currently does not support failover
    ↓
 3. Read rule configuration files
    ↓
-4. Perform TCP connectivity detection for each target
+4. Perform TCP connectivity check for each target
    ├── nc -z -w3 target port
-   └── Backup: telnet target port
+   └── Fallback: telnet target port
    ↓
 5. Update health status file (atomic update)
    ├── Success: success_count++, fail_count=0
@@ -224,34 +213,34 @@ Native realm currently does not support failover
    ↓
 6. Determine status changes
    ├── 2 consecutive failures → Mark as failed
-   └── 2 consecutive successes + 120s cooldown (avoid jitter switching) → Mark as recovered
+   └── 2 consecutive successes + 120s cooldown (prevent flapping) → Mark as recovered
    ↓
 7. If status changes, create update marker file
 ```
 
-Clients can use command `while ($true) { (Invoke-WebRequest -Uri 'http://ifconfig.me/ip' -UseBasicParsing).Content; Start-Sleep -Seconds 1 }` or `while true; do curl -s ifconfig.me; echo; sleep 1; done` to monitor IP changes in real-time and confirm mode effectiveness.
+Clients can monitor IP changes in real-time using:
+`while ($true) { (Invoke-WebRequest -Uri 'http://ifconfig.me/ip' -UseBasicParsing).Content; Start-Sleep -Seconds 1 }` or `while true; do curl -s ifconfig.me; echo; sleep 1; done`
 
 </details>
 
 <details>
 <summary>
-<strong>Dual-end realm calling system MPTCP</strong>
+<strong>Dual-end Realm with System MPTCP</strong>
 </summary>
 
 **Q: Does MPTCP endpoint create a new virtual network interface?**
-No, it tells the MPTCP protocol stack: this IP address can be used for MPTCP connections to specify paths: data can be transmitted through this IP address and corresponding network interface
+No, it tells the MPTCP protocol stack: this IP address can be used for MPTCP connections to specify paths; data can be transmitted through this IP address and corresponding network interface
 Establish multiple paths: allow a single TCP connection to use multiple network paths simultaneously
 
 **Q: Why specify both IP and network interface?**
-Network interface: the system needs to know which physical network interface this IP address corresponds to for routing selection
-IP address: the MPTCP protocol needs to know which IP addresses can be used to establish subflows
-192.168.1.100 dev eth0 subflow fullmesh = tells MPTCP it can establish connections through eth0 interface's this IP
-10.0.0.50 dev eth1 subflow fullmesh = tells MPTCP it can establish connections through eth1 interface's this IP
+Network interface: the system needs to know which physical NIC this IP corresponds to for routing
+IP address: MPTCP protocol needs to know which IPs can be used to establish subflows
+192.168.1.100 dev eth0 subflow fullmesh = tells MPTCP it can establish connections via eth0's IP
+10.0.0.50 dev eth1 subflow fullmesh = tells MPTCP it can establish connections via eth1's IP
 
-If you want more fine-grained control, consider:
+For more fine-grained control, consider:
 
-Server-side also setting signal endpoints:
-Fine-grained MPTCP control
+Server-side signal endpoints for fine-grained MPTCP control
 
 </details>
 
@@ -262,58 +251,52 @@ Two concepts that are easily confused
 
 **Simple Understanding**
 
-Port forwarding only forwards traffic from one port to another port
+Port forwarding only forwards traffic from one port to another
 
-Chain proxy is like this
+Chain proxy works like this:
 
-Divided into two proxy segments, hence also called segmented proxy, secondary proxy (detailed configuration may be covered later)
+Divided into two proxy segments, hence also called segmented proxy or secondary proxy (detailed configuration may be covered later)
 
-**Each has its advantages** depending on use case | Note some servers don't allow proxy installation | However chain proxy can be very flexible in certain scenarios
+**Each has its advantages** depending on use case | Note: some servers don't allow proxy installation | However, chain proxy can be very flexible in certain scenarios
 
 | Chain Proxy | Port Forwarding |
 | :---------- | :-------------- |
-| All servers in the chain need proxy software installed | Relay server installs forwarding, exit server installs proxy |
-| Higher configuration file complexity | Lower configuration file complexity (L4 layer forwarding) |
+| All servers in the chain need proxy software | Relay installs forwarder, exit installs proxy |
+| Higher configuration complexity | Lower complexity (L4 forwarding) |
 | Overhead from unpacking/packing at each hop | Native TCP/UDP passthrough, theoretically faster |
-| More precise outbound control and traffic splitting (configure exit at each hop) | Difficult outbound control |
+| More precise outbound control (configure exit at each hop) | Difficult outbound control |
 
 </details>
 
 ### Dependency Tools
 Principle: prioritize **Linux native lightweight tools**, keeping the system clean and lightweight
 
-| Tool | Purpose |
-|------|---------|
-| `curl` | Download and IP retrieval |
-| `wget` | Backup download tool |
-| `tar` | Compression/decompression tool |
-| `unzip` | ZIP decompression |
-| `systemctl` | Commander coordinating work |
-| `bc` | Numerical calculations |
-| `nc` | Network connection testing |
-| `grep`/`cut` | Text processing and recognition |
-| `inotify` | Marker files |
-| `iproute2` | MPTCP endpoint management |
-| `jq` | JSON data processing |
-| `nftables` | Port traffic statistics |
-| `tc` | Traffic control and limiting |
+| Tool       | Purpose                     | Tool        | Purpose                    |
+|------------|-----------------------------|-------------|----------------------------|
+| `curl`     | Download and IP retrieval   | `wget`      | Backup download tool       |
+| `tar`      | Compression/decompression   | `unzip`     | ZIP decompression          |
+| `bc`       | Numerical calculations      | `nc`        | Network connection testing |
+| `grep`/`cut` | Text processing           | `inotify`   | File markers               |
+| `iproute2` | MPTCP endpoint management   | `jq`        | JSON data processing       |
+| `nftables` | Port traffic statistics     | `tc`        | Traffic control            |
+
 
 ## File Structure
 
-File organization structure after installation:
+File organization after complete installation:
 
 ```
 📦 System Files
 ├── /usr/local/bin/
 │   ├── realm                    # Realm main program
-│   ├── xwPF.sh                  # Management script main body
+│   ├── xwPF.sh                  # Management script
 │   ├── port-traffic-dog.sh      # Port traffic monitor script
 │   ├── pf                       # Quick start command
-│   └── dog                      # Port traffic monitor quick command
+│   └── dog                      # Port traffic monitor shortcut
 │
 ├── /etc/realm/                  # Realm configuration directory
-│   ├── manager.conf             # Status management file (core)
-│   ├── config.json              # Realm working configuration file
+│   ├── manager.conf             # Status management file
+│   ├── config.json              # Realm working configuration
 │   ├── rules/                   # Forwarding rules directory
 │   │   ├── rule-1.conf          # Rule 1 configuration
 │   │   ├── rule-2.conf          # Rule 2 configuration
@@ -321,8 +304,8 @@ File organization structure after installation:
 │   └── health/                  # Health check directory (failover)
 │       └── health_status.conf   # Health status file
 │
-├── /etc/port-traffic-dog/       # Port traffic monitor configuration directory
-│   ├── config.json              # Traffic monitoring configuration file
+├── /etc/port-traffic-dog/       # Port traffic monitor configuration
+│   ├── config.json              # Traffic monitoring configuration
 │   ├── traffic_data.json        # Traffic backup data (for restart recovery)
 │   ├── notifications/           # Notification module directory
 │   │   └── telegram.sh          # Telegram notification module
@@ -335,7 +318,7 @@ File organization structure after installation:
 │   └── realm-health-check.timer    # Health check timer
 │
 ├── /etc/sysctl.d/
-│   └── 90-enable-MPTCP.conf     # MPTCP system configuration file
+│   └── 90-enable-MPTCP.conf     # MPTCP system configuration
 │
 └── /var/log/
     └── port-traffic-dog.log     # Port traffic monitor log
@@ -350,6 +333,6 @@ File organization structure after installation:
 
 ---
 
-**⭐ If this project helps you, please give it a Star for support!**
+**⭐ If this project helps you, please give it a Star!**
 
 [![Star History Chart](https://api.star-history.com/svg?repos=zywe03/realm-xwPF&type=Date)](https://www.star-history.com/#zywe03/realm-xwPF&Date)
