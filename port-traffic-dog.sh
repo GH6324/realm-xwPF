@@ -15,15 +15,6 @@ readonly YELLOW='\033[0;33m'
 readonly BLUE='\033[0;34m'
 readonly GREEN='\033[0;32m'
 readonly NC='\033[0m'
-
-# 多源下载策略
-readonly DOWNLOAD_SOURCES=(
-    ""
-    "https://ghfast.top/"
-    "https://free.cn.eu.org/"
-    "https://ghproxy.net/"
-)
-
 # 网络超时设置
 readonly SHORT_CONNECT_TIMEOUT=5
 readonly SHORT_MAX_TIMEOUT=7
@@ -2397,26 +2388,14 @@ download_with_sources() {
     local url=$1
     local output_file=$2
 
-    for source in "${DOWNLOAD_SOURCES[@]}"; do
-        local full_url="${source}${url}"
-
-        if [ -z "$source" ]; then
-            echo -e "${YELLOW}尝试官方源下载...${NC}"
-            full_url="$url"
-        else
-            echo -e "${YELLOW}尝试加速源: ${source}${NC}"
+    if curl -sL --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT "$url" -o "$output_file" 2>/dev/null; then
+        if [ -s "$output_file" ]; then
+            echo -e "${GREEN}下载成功${NC}"
+            return 0
         fi
+    fi
 
-        if curl -sL --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT "$full_url" -o "$output_file" 2>/dev/null; then
-            if [ -s "$output_file" ]; then
-                echo -e "${GREEN}下载成功${NC}"
-                return 0
-            fi
-        fi
-        echo -e "${YELLOW}下载失败，尝试下一个源...${NC}"
-    done
-
-    echo -e "${RED}所有下载源均失败${NC}"
+    echo -e "${RED}下载失败${NC}"
     return 1
 }
 

@@ -7,7 +7,7 @@
 ## 脚本界面预览
 
 **主界面**
-![1e811dd521314e01a2e533b72580c7a4.png](https://i.mji.rip/2025/08/28/1e811dd521314e01a2e533b72580c7a4.png)
+![cc59017896d277a8b35109ae44eac977.gif](https://i.mji.rip/2025/12/12/cc59017896d277a8b35109ae44eac977.gif)
 
 ## 适用场景
 
@@ -61,8 +61,9 @@ wget -O port-traffic-dog.sh https://raw.githubusercontent.com/zywe03/realm-xwPF/
 
 ### 方式二：使用加速源
 ```bash
-wget -O port-traffic-dog.sh https://ghfast.top/https://raw.githubusercontent.com/zywe03/realm-xwPF/main/port-traffic-dog.sh && chmod +x port-traffic-dog.sh && ./port-traffic-dog.sh
+wget -O port-traffic-dog.sh https://v6.gh-proxy.org/https://raw.githubusercontent.com/zywe03/realm-xwPF/main/port-traffic-dog.sh && chmod +x port-traffic-dog.sh && ./port-traffic-dog.sh
 ```
+若加速源失效，可多次重试或更换其他具有内置加速功能的代理源
 
 ## 系统要求
 

@@ -66,14 +66,6 @@ BLUE='\033[0;34m'
 WHITE='\033[1;37m'
 NC='\033[0m'
 
-# 多源下载策略
-DOWNLOAD_SOURCES=(
-    ""
-    "https://ghfast.top/"
-    "https://free.cn.eu.org/"
-    "https://ghproxy.net/"
-)
-
 # 网络超时设计：短超时用于快速失败，长超时用于重要操作
 SHORT_CONNECT_TIMEOUT=5
 SHORT_MAX_TIMEOUT=7
@@ -5062,36 +5054,20 @@ diagnose_system() {
 }
 
 
-# 统一多源下载函数
+# 统一下载函数
 download_from_sources() {
     local url="$1"
     local target_path="$2"
 
-    for proxy in "${DOWNLOAD_SOURCES[@]}"; do
-        local full_url="${proxy}${url}"
-        local source_name
-
-        if [ -z "$proxy" ]; then
-            source_name="GitHub官方源"
-        else
-            source_name="加速源: $(echo "$proxy" | sed 's|https://||' | sed 's|/$||')"
-        fi
-
-        # 将状态消息重定向到 stderr (>&2)
-        echo -e "${BLUE}尝试 $source_name${NC}" >&2
-
-        if curl -fsSL --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT "$full_url" -o "$target_path"; then
-            echo -e "${GREEN}✓ $source_name 下载成功${NC}" >&2
-            return 0
-        else
-
-            echo -e "${YELLOW}✗ $source_name 下载失败，尝试下一个源...${NC}" >&2
-        fi
-    done
-
-    echo -e "${RED}✗ 所有下载源均失败${NC}" >&2
-    return 1
+    if curl -fsSL --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT "$url" -o "$target_path"; then
+        echo -e "${GREEN}✓ 下载成功${NC}" >&2
+        return 0
+    else
+        echo -e "${RED}✗ 下载失败${NC}" >&2
+        return 1
+    fi
 }
+
 
 # 获取realm最新版本号
 get_latest_realm_version() {

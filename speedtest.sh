@@ -8,14 +8,6 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 WHITE='\033[1;37m'
 NC='\033[0m'
-
-# 多源下载策略
-DOWNLOAD_SOURCES=(
-    ""
-    "https://ghfast.top/"
-    "https://free.cn.eu.org/"
-    "https://ghproxy.net/"
-)
 SHORT_CONNECT_TIMEOUT=5
 SHORT_MAX_TIMEOUT=7
 LONG_CONNECT_TIMEOUT=15
@@ -52,33 +44,18 @@ cleanup_on_exit() {
     echo -e "\n${YELLOW}脚本已退出，清理完成${NC}"
 }
 
-# 统一多源下载函数
+# 统一下载函数
 download_from_sources() {
     local url="$1"
     local target_path="$2"
 
-    for proxy in "${DOWNLOAD_SOURCES[@]}"; do
-        local full_url="${proxy}${url}"
-        local source_name
-
-        if [ -z "$proxy" ]; then
-            source_name="GitHub官方源"
-        else
-            source_name="加速源: $(echo "$proxy" | sed 's|https://||' | sed 's|/$||')"
-        fi
-
-        # 将状态消息重定向到 stderr (>&2)
-        echo -e "${BLUE}尝试 $source_name${NC}" >&2
-
-        if curl -fsSL --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT "$full_url" -o "$target_path"; then
-            echo -e "${GREEN}✓ $source_name 下载成功${NC}" >&2
-            return 0
-        else
-            echo -e "${YELLOW}✗ $source_name 下载失败，尝试下一个源...${NC}" >&2
-        fi
-    done
-    echo -e "${RED}✗ 所有下载源均失败${NC}" >&2
-    return 1
+    if curl -fsSL --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT "$url" -o "$target_path"; then
+        echo -e "${GREEN}✓ 下载成功${NC}" >&2
+        return 0
+    else
+        echo -e "${RED}✗ 下载失败${NC}" >&2
+        return 1
+    fi
 }
 
 # 全局测试结果数据结构
@@ -1524,54 +1501,26 @@ show_main_menu() {
     done
 }
 
-# 手动更新脚本
+# 更新脚本
 manual_update_script() {
-    clear
-    echo ""
-
-    # 获取当前脚本路径
-    local current_script="$0"
-
-    echo -e "${YELLOW}将下载最新版本覆盖当前脚本${NC}"
-    echo -e "${BLUE}当前脚本路径: $current_script${NC}"
-    echo ""
-
-    read -p "确认更新脚本？(y/N): " confirm
-    if [[ ! $confirm =~ ^[Yy]$ ]]; then
-        echo -e "${YELLOW}取消更新${NC}"
-        echo ""
-        echo -e "${WHITE}按任意键返回主菜单...${NC}"
-        read -n 1 -s
-        return
-    fi
-
-    echo ""
-    echo -e "${GREEN}正在更新测速脚本...${NC}"
-
-    # 从GitHub下载最新版本
-    echo -e "${BLUE}正在从GitHub下载最新脚本...${NC}"
+    echo -e "${YELLOW}正在更新脚本...${NC}"
 
     local script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/speedtest.sh"
+    local temp_file=$(mktemp)
 
-    # 使用统一多源下载函数
-    if download_from_sources "$script_url" "$current_script"; then
-        chmod +x "$current_script"
-        echo ""
-        echo -e "${GREEN}✅ 脚本更新完成${NC}"
-        echo -e "${YELLOW}重新启动脚本以使用最新版本${NC}"
-        echo ""
-        echo -e "${WHITE}按任意键重新启动脚本...${NC}"
-        read -n 1 -s
-        exec "$current_script"
+    if download_from_sources "$script_url" "$temp_file"; then
+        mv "$temp_file" "$0"
+        chmod +x "$0"
+        echo -e "${GREEN}✅ 更新完成，重新启动脚本${NC}"
+        exec "$0"
     else
-        echo ""
-        echo -e "${RED}✗ 脚本更新失败${NC}"
-        echo -e "${BLUE}继续使用现有脚本版本${NC}"
-        echo ""
-        echo -e "${WHITE}按任意键返回主菜单...${NC}"
-        read -n 1 -s
+        rm -f "$temp_file"
+        echo -e "${RED}✗ 更新失败${NC}"
     fi
+
+    read -p "按回车键返回..."
 }
+
 # 主函数
 main() {
     check_root

@@ -88,8 +88,9 @@ wget -qO- https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xwPF.sh | sud
 ### Network Restricted? Use Accelerated Mirror
 
 ```bash
-wget -qO- https://ghfast.top/https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xwPF.sh | sudo bash -s install
+wget -qO- https://v6.gh-proxy.org/https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xwPF.sh | sudo bash -s install
 ```
+If the mirror fails, retry or replace with another proxy that has built-in acceleration.
 
 ## Offline Installation (No Network Access)
 
