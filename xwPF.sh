@@ -76,6 +76,10 @@ RULES_DIR="${CONFIG_DIR}/rules"
 # 默认tls和host域名（加密解密需要相同SNI）
 DEFAULT_SNI_DOMAIN="www.tesla.com"
 
+# 网络超时配置
+SHORT_CONNECT_TIMEOUT=5
+SHORT_MAX_TIMEOUT=7
+
 # 生成network配置
 generate_network_config() {
     local config_file="/etc/realm/config.json"
@@ -212,13 +216,13 @@ get_public_ip() {
 
     [ "$ip_type" = "ipv6" ] && curl_opts="-6"
 
-    ip=$(curl -s --connect-timeout 5 --max-time 7 $curl_opts https://ipinfo.io/ip 2>/dev/null | tr -d '\n\r ')
+    ip=$(curl -s --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT $curl_opts https://ipinfo.io/ip 2>/dev/null | tr -d '\n\r ')
     if [ -n "$ip" ] && [[ "$ip" =~ ^[0-9a-fA-F.:]+$ ]]; then
         echo "$ip"
         return 0
     fi
 
-    ip=$(curl -s --connect-timeout 5 --max-time 7 $curl_opts https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | grep "ip=" | cut -d'=' -f2 | tr -d '\n\r ')
+    ip=$(curl -s --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT $curl_opts https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | grep "ip=" | cut -d'=' -f2 | tr -d '\n\r ')
     if [ -n "$ip" ] && [[ "$ip" =~ ^[0-9a-fA-F.:]+$ ]]; then
         echo "$ip"
         return 0
