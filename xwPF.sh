@@ -1,4 +1,4 @@
-#!/bin/bash
+﻿#!/bin/bash
 
 SCRIPT_VERSION="v2.1.8"
 REALM_VERSION="v2.9.2"
@@ -65,12 +65,6 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 WHITE='\033[1;37m'
 NC='\033[0m'
-
-# 网络超时设计：短超时用于快速失败，长超时用于重要操作
-SHORT_CONNECT_TIMEOUT=5
-SHORT_MAX_TIMEOUT=7
-LONG_CONNECT_TIMEOUT=15
-LONG_MAX_TIMEOUT=20
 
 REALM_PATH="/usr/local/bin/realm"
 CONFIG_DIR="/etc/realm"
@@ -216,17 +210,15 @@ get_public_ip() {
     local ip=""
     local curl_opts=""
 
-    if [ "$ip_type" = "ipv6" ]; then
-        curl_opts="-6"
-    fi
+    [ "$ip_type" = "ipv6" ] && curl_opts="-6"
 
-    ip=$(curl -s --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT $curl_opts https://ipinfo.io/ip 2>/dev/null | tr -d '\n\r ')
+    ip=$(curl -s --connect-timeout 5 --max-time 7 $curl_opts https://ipinfo.io/ip 2>/dev/null | tr -d '\n\r ')
     if [ -n "$ip" ] && [[ "$ip" =~ ^[0-9a-fA-F.:]+$ ]]; then
         echo "$ip"
         return 0
     fi
 
-    ip=$(curl -s --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT $curl_opts https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | grep "ip=" | cut -d'=' -f2 | tr -d '\n\r ')
+    ip=$(curl -s --connect-timeout 5 --max-time 7 $curl_opts https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | grep "ip=" | cut -d'=' -f2 | tr -d '\n\r ')
     if [ -n "$ip" ] && [[ "$ip" =~ ^[0-9a-fA-F.:]+$ ]]; then
         echo "$ip"
         return 0
@@ -272,33 +264,22 @@ read_manager_conf() {
 # 支持realm单端口多规则复用，避免误报端口冲突
 check_port_usage() {
     local port="$1"
-    local service_name="$2"
+    [ -z "$port" ] && return 0
 
-    if [ -z "$port" ]; then
-        return 0
+    local output=$(ss -tulnp 2>/dev/null | grep ":${port} ")
+    [ -z "$output" ] && return 0
+
+    if echo "$output" | grep -q "realm"; then
+        echo -e "${GREEN}✓ 端口 $port 已被realm服务占用，支持单端口中转多服务端配置${NC}"
+        return 1
     fi
 
-    local port_check_cmd="ss -tulnp"
-    local port_output=$($port_check_cmd 2>/dev/null | grep ":${port} ")
+    echo -e "${YELLOW}警告: 端口 $port 已被其他服务占用${NC}"
+    echo -e "${BLUE}占用进程信息:${NC}"
+    echo "$output" | sed 's/^/  /'
 
-    if [ -n "$port_output" ]; then
-        if echo "$port_output" | grep -q "realm"; then
-            echo -e "${GREEN}✓ 端口 $port 已被realm服务占用，支持单端口中转多服务端配置${NC}"
-            return 1
-        else
-            echo -e "${YELLOW}警告: 端口 $port 已被其他服务占用${NC}"
-            echo -e "${BLUE}占用进程信息:${NC}"
-            echo "$port_output" | while read line; do
-                echo "  $line"
-            done
-
-            read -p "是否继续配置？(y/n): " continue_config
-            if [[ ! "$continue_config" =~ ^[Yy]$ ]]; then
-                echo "配置已取消"
-                exit 1
-            fi
-        fi
-    fi
+    read -p "是否继续配置？(y/n): " ans
+    [[ "$ans" =~ ^[Yy]$ ]] || { echo "配置已取消"; exit 1; }
     return 0
 }
 
@@ -322,31 +303,17 @@ check_connectivity() {
 }
 
 validate_port() {
-    local port="$1"
-    if [[ "$port" =~ ^[0-9]+$ ]] && [ "$port" -ge 1 ] && [ "$port" -le 65535 ]; then
-        return 0
-    else
-        return 1
-    fi
+    [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
 }
 
 validate_ports() {
-    local ports_input="$1"
+    local input="${1// /}"
+    [ -z "$input" ] && return 1
 
-    ports_input=$(echo "$ports_input" | tr -d ' ')
-
-    if [ -z "$ports_input" ]; then
-        return 1
-    fi
-
-    IFS=',' read -ra PORT_ARRAY <<< "$ports_input"
-    for port in "${PORT_ARRAY[@]}"; do
-        if ! validate_port "$port"; then
-            return 1
-        fi
+    IFS=',' read -ra ports <<< "$input"
+    for p in "${ports[@]}"; do
+        validate_port "$p" || return 1
     done
-
-    return 0
 }
 
 # 为中转服务器创建多端口规则
@@ -709,11 +676,6 @@ validate_rule_ids() {
     done
 
     echo "${#valid_ids[@]}|${#invalid_ids[@]}|${valid_ids[*]}|${invalid_ids[*]}"
-}
-
-parse_rule_ids() {
-    local input="$1"
-    echo "$input" | tr -d ' '
 }
 
 get_active_rules_count() {
@@ -5635,7 +5597,6 @@ generate_endpoints_from_rules() {
         fi
 
         # 生成endpoint配置
-        # 生成endpoint配置
         local listen_field=""
         if validate_ip "$listen_ip"; then
             listen_field="\"listen\": \"${listen_ip}:${port_key}\""
@@ -5678,7 +5639,6 @@ generate_endpoints_from_rules() {
             \"balance\": \"$balance_mode: $weight_config\""
         fi
 
-        # 添加through字段（仅中转服务器）
         # 添加through字段（仅中转服务器）
         local role="${port_roles[$port_key]:-1}"  # 使用存储的角色，默认为中转服务器
         if [ "$role" = "1" ] && [ -n "$through_ip" ] && [ "$through_ip" != "::" ]; then
@@ -5913,35 +5873,14 @@ generate_systemd_service() {
     echo -e "${YELLOW}正在生成 systemd 服务文件...${NC}"
     cat > "$SYSTEMD_PATH" <<EOF
 [Unit]
-Description=Realm TCP Relay Service
-Documentation=https://github.com/zywe03/realm-xwPF
-After=network.target nss-lookup.target
-Wants=network.target
+Description=realm-xwpf
+After=network.target
 
 [Service]
 Type=simple
-User=root
-Group=root
 ExecStart=${REALM_PATH} -c ${CONFIG_PATH}
-ExecReload=/bin/kill -HUP \$MAINPID
 Restart=on-failure
-RestartSec=5s
-RestartPreventExitStatus=23
-
-# 资源限制优化
-LimitNOFILE=1048576
-LimitNPROC=1048576
-
-# 安全设置
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=${CONFIG_DIR}
-
-# 日志管理（使用systemd journal）
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=realm
+RestartSec=3s
 
 [Install]
 WantedBy=multi-user.target
@@ -5977,14 +5916,13 @@ self_install() {
     local script_name="xwPF.sh"
     local install_dir="/usr/local/bin"
     local shortcut_name="pf"
+    local base_script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xwPF.sh"
 
     mkdir -p "$install_dir"
 
     if [ -f "${install_dir}/${script_name}" ]; then
         echo -e "${GREEN}✓ 检测到系统已安装脚本，正在更新...${NC}"
-
         echo -e "${BLUE}正在从GitHub下载最新脚本...${NC}"
-        local base_script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xwPF.sh"
 
         if download_from_sources "$base_script_url" "${install_dir}/${script_name}"; then
             chmod +x "${install_dir}/${script_name}"
@@ -5993,14 +5931,11 @@ self_install() {
             echo -e "${BLUE}使用现有脚本版本${NC}"
         fi
     elif [ -f "$0" ]; then
-        # 首次安装：复制脚本到系统目录
         cp "$0" "${install_dir}/${script_name}"
         chmod +x "${install_dir}/${script_name}"
         echo -e "${GREEN}✓ 脚本已安装到: ${install_dir}/${script_name}${NC}"
     else
-        # 如果是通过管道运行的，需要重新下载
         echo -e "${BLUE}正在从GitHub下载脚本...${NC}"
-        local base_script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xwPF.sh"
 
         if download_from_sources "$base_script_url" "${install_dir}/${script_name}"; then
             chmod +x "${install_dir}/${script_name}"
@@ -6013,29 +5948,11 @@ self_install() {
     # 创建快捷命令
     cat > "${install_dir}/${shortcut_name}" <<EOF
 #!/bin/bash
-# Realm 端口转发快捷启动脚本
-# 优先检测当前目录的脚本，如果不存在则使用系统安装的脚本
-
-# 检查当前目录是否有xwPF.sh
-if [ -f "\$(pwd)/xwPF.sh" ]; then
-    exec bash "\$(pwd)/xwPF.sh" "\$@"
-else
-    exec bash "${install_dir}/${script_name}" "\$@"
-fi
+exec bash "${install_dir}/${script_name}" "\$@"
 EOF
 
     chmod +x "${install_dir}/${shortcut_name}"
     echo -e "${GREEN}✓ 快捷命令已创建: ${shortcut_name}${NC}"
-
-    # 检查PATH
-    if [[ ":$PATH:" != *":${install_dir}:"* ]]; then
-        echo -e "${YELLOW}注意: ${install_dir} 不在 PATH 中${NC}"
-        echo -e "${BLUE}建议将以下行添加到 ~/.bashrc:${NC}"
-        echo -e "${GREEN}export PATH=\"\$PATH:${install_dir}\"${NC}"
-        echo ""
-    fi
-
-    return 0
 }
 
 # 安装和配置流程
@@ -6204,8 +6121,6 @@ service_status() {
     echo ""
     echo -e "${BLUE}端口监听状态:${NC}"
 
-    local port_check_cmd="ss -tlnp"
-
     # 检查端口监听状态
     if [ "$has_rules" = true ]; then
         # 多规则模式：检查所有启用规则的端口
@@ -6217,7 +6132,7 @@ service_status() {
                     else
                         local display_ip="${NAT_LISTEN_IP:-::}"
                     fi
-                    if $port_check_cmd 2>/dev/null | grep -q ":${LISTEN_PORT} "; then
+                    if ss -tlnp 2>/dev/null | grep -q ":${LISTEN_PORT} "; then
                         echo -e "端口 ${LISTEN_IP:-$display_ip}:$LISTEN_PORT ($RULE_NAME): ${GREEN}正在监听${NC}"
                     else
                         echo -e "端口 ${LISTEN_IP:-$display_ip}:$LISTEN_PORT ($RULE_NAME): ${RED}未监听${NC}"
@@ -6274,9 +6189,6 @@ uninstall_realm_stage_one() {
     # 清理文件
     cleanup_files_by_paths "$REALM_PATH" "$CONFIG_DIR" "$SYSTEMD_PATH" "/etc/realm"
     cleanup_files_by_pattern "realm" "/var/log /tmp /var/tmp"
-
-    # 清理xwFailover.sh相关文件
-    rm -f "/etc/realm/xwFailover.sh"
 
     # 清理系统配置
     [ -f "/etc/sysctl.d/90-enable-MPTCP.conf" ] && rm -f "/etc/sysctl.d/90-enable-MPTCP.conf"
