@@ -589,7 +589,7 @@ calculate_total_traffic() {
             echo $((input_bytes + output_bytes))
             ;;
         "single"|*)
-            # 单向统计：仅 output（计数器已在规则层面×2）
+            # 单向统计：仅 output
             echo $output_bytes
             ;;
     esac
@@ -969,7 +969,7 @@ add_port_monitoring() {
     echo "   总流量 = in*2 + out*2"
     echo
     echo "2. 单向流量统计"
-    echo "   仅统计出站流量，总流量 = out*2"
+    echo "   仅统计出站流量，总流量 = out"
     echo
     echo "请选择统计模式:"
     echo "1. 双向流量统计"
@@ -1242,14 +1242,10 @@ add_nftables_rules() {
             nft add rule $family $table_name forward tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
             nft add rule $family $table_name forward udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
         else
-            # 单向模式：只创建 out 计数器，绑定 output 规则两次（out × 2）
+            # 单向模式：只创建 out 计数器，绑定 output 规则一次（out × 1）
             nft list counter $family $table_name "port_${port_safe}_out" >/dev/null 2>&1 || \
                 nft add counter $family $table_name "port_${port_safe}_out" 2>/dev/null || true
 
-            nft add rule $family $table_name output tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
-            nft add rule $family $table_name output udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
-            nft add rule $family $table_name forward tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
-            nft add rule $family $table_name forward udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
             nft add rule $family $table_name output tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
             nft add rule $family $table_name output udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
             nft add rule $family $table_name forward tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
@@ -1283,14 +1279,10 @@ add_nftables_rules() {
             nft add rule $family $table_name forward tcp sport $port counter name "port_${port}_out"
             nft add rule $family $table_name forward udp sport $port counter name "port_${port}_out"
         else
-            # 单向模式：只创建 out 计数器，绑定 output 规则两次（out × 2）
+            # 单向模式：只创建 out 计数器，绑定 output 规则一次（out × 1）
             nft list counter $family $table_name "port_${port}_out" >/dev/null 2>&1 || \
                 nft add counter $family $table_name "port_${port}_out" 2>/dev/null || true
 
-            nft add rule $family $table_name output tcp sport $port counter name "port_${port}_out"
-            nft add rule $family $table_name output udp sport $port counter name "port_${port}_out"
-            nft add rule $family $table_name forward tcp sport $port counter name "port_${port}_out"
-            nft add rule $family $table_name forward udp sport $port counter name "port_${port}_out"
             nft add rule $family $table_name output tcp sport $port counter name "port_${port}_out"
             nft add rule $family $table_name output udp sport $port counter name "port_${port}_out"
             nft add rule $family $table_name forward tcp sport $port counter name "port_${port}_out"
@@ -1716,11 +1708,7 @@ apply_nftables_quota() {
             nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
         else
-            # 单向模式：只绑定 output×2
-            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            # 单向模式：只绑定 output×1
             nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
@@ -1754,11 +1742,7 @@ apply_nftables_quota() {
             nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
         else
-            # 单向模式：只绑定 output×2
-            nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
-            nft insert rule $family $table_name forward udp sport $port quota name "$quota_name" drop 2>/dev/null || true
+            # 单向模式：只绑定 output×1
             nft insert rule $family $table_name output tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name output udp sport $port quota name "$quota_name" drop 2>/dev/null || true
             nft insert rule $family $table_name forward tcp sport $port quota name "$quota_name" drop 2>/dev/null || true
