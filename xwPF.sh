@@ -1356,8 +1356,25 @@ edit_nat_server_config() {
     sed -i "s/^REMOTE_HOST=.*/REMOTE_HOST=\"$new_remote_host\"/" "$rule_file"
     sed -i "s/^REMOTE_PORT=.*/REMOTE_PORT=\"$new_remote_port\"/" "$rule_file"
 
+    # 规则备注编辑
+    local current_note="${RULE_NOTE:-}"
+    echo -ne "规则备注(回车默认${GREEN}${current_note}${NC}): "
+    read new_note
+    new_note=$(echo "$new_note" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | cut -c1-50)
+    if [ -z "$new_note" ]; then
+        new_note="$current_note"
+    fi
+
+    # 更新或添加 RULE_NOTE 字段
+    if grep -q "^RULE_NOTE=" "$rule_file"; then
+        sed -i "s|^RULE_NOTE=.*|RULE_NOTE=\"$new_note\"|" "$rule_file"
+    else
+        echo "RULE_NOTE=\"$new_note\"" >> "$rule_file"
+    fi
+
     # 如果是负载均衡模式，需要处理TARGET_STATES同步
     if [ "$is_balance_mode" = true ]; then
+
         local old_target="${old_remote_host}:${old_remote_port}"
         local new_target="${new_remote_host}:${new_remote_port}"
         local port_changed=false
@@ -1474,8 +1491,24 @@ edit_exit_server_config() {
         fi
     done
     
+    # 规则备注编辑
+    local current_note="${RULE_NOTE:-}"
+    echo -ne "规则备注(回车默认${GREEN}${current_note}${NC}): "
+    read new_note
+    new_note=$(echo "$new_note" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | cut -c1-50)
+    if [ -z "$new_note" ]; then
+        new_note="$current_note"
+    fi
+    
     sed -i "s/^LISTEN_PORT=.*/LISTEN_PORT=\"$new_listen_port\"/" "$rule_file"
     sed -i "s|^FORWARD_TARGET=.*|FORWARD_TARGET=\"${new_target_host}:${new_target_port}\"|" "$rule_file"
+    
+    # 更新或添加 RULE_NOTE 字段
+    if grep -q "^RULE_NOTE=" "$rule_file"; then
+        sed -i "s|^RULE_NOTE=.*|RULE_NOTE=\"$new_note\"|" "$rule_file"
+    else
+        echo "RULE_NOTE=\"$new_note\"" >> "$rule_file"
+    fi
     
     echo ""
     echo -e "${GREEN}✓ 配置已更新${NC}"
