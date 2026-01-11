@@ -16,20 +16,17 @@ jobs:
         id: get-version
         run: |
           set -e
-          
           # 获取最新版本，v*.*.*格式
           echo "正在获取realm最新版本..."
           LATEST_RAW=$(curl -s --connect-timeout 10 --max-time 30 \
             "https://api.github.com/repos/zhboner/realm/releases/latest" | \
             jq -r '.tag_name // empty')
-          
           # 检查API调用是否成功
           if [ -z "$LATEST_RAW" ]; then
             echo "❌ GitHub API调用失败，跳过本次检查"
             echo "skip=true" >> $GITHUB_OUTPUT
             exit 0
           fi
-          
           # 验证版本号格式 v*.*.*
           if [[ ! "$LATEST_RAW" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "❌ 版本号格式不符合v*.*.*，跳过: $LATEST_RAW"
@@ -56,7 +53,7 @@ jobs:
           echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
 
           # 提取当前脚本版本号并计算新版本
-          CURRENT_SCRIPT_VERSION=$(grep '^SCRIPT_VERSION=' xwPF.sh | cut -d'"' -f2)
+          CURRENT_SCRIPT_VERSION=$(grep '^SCRIPT_VERSION="' xwPF.sh | head -1 | cut -d'"' -f2)
           if [[ "$CURRENT_SCRIPT_VERSION" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
             MAJOR=${BASH_REMATCH[1]}
             MINOR=${BASH_REMATCH[2]}
@@ -85,7 +82,6 @@ jobs:
         id: update
         run: |
           set -e
-          
           LATEST_VERSION="${{ steps.get-version.outputs.latest_version }}"
           CURRENT_VERSION="${{ steps.get-version.outputs.current_version }}"
           NEW_SCRIPT_VERSION="${{ steps.get-version.outputs.new_script_version }}"
@@ -103,7 +99,7 @@ jobs:
 
           # 验证更新是否成功
           NEW_REALM_VERSION=$(grep '^REALM_VERSION=' xwPF.sh | cut -d'"' -f2)
-          NEW_SCRIPT_VERSION_CHECK=$(grep '^SCRIPT_VERSION=' xwPF.sh | cut -d'"' -f2)
+          NEW_SCRIPT_VERSION_CHECK=$(grep '^SCRIPT_VERSION="' xwPF.sh | head -1 | cut -d'"' -f2)
 
           if [ "$NEW_REALM_VERSION" != "$LATEST_VERSION" ] || [ "$NEW_SCRIPT_VERSION_CHECK" != "$NEW_SCRIPT_VERSION" ]; then
             echo "❌ 版本号更新失败，恢复原文件"
@@ -128,14 +124,11 @@ jobs:
           title: "bump: realm版本号${{ steps.get-version.outputs.latest_version }}"
           body: |
             自动检测到realm新版本发布
-            
             - 当前版本：${{ steps.get-version.outputs.current_version }}
             - 最新版本：${{ steps.get-version.outputs.latest_version }}
-            
             此PR由GitHub Actions自动创建，请检查后合并。
           branch: update-realm-${{ steps.get-version.outputs.latest_version }}
           delete-branch: true
-          
       - name: Summary
         if: always()
         run: |
