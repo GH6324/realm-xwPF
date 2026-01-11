@@ -120,8 +120,8 @@ jobs:
         uses: peter-evans/create-pull-request@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "bump: realm版本号${{ steps.get-version.outputs.latest_version }}"
-          title: "bump: realm版本号${{ steps.get-version.outputs.latest_version }}"
+          commit-message: "bump: 同步更新realm ${{ steps.get-version.outputs.latest_version }}"
+          title: "bump: 同步更新realm ${{ steps.get-version.outputs.latest_version }}"
           body: |
             自动检测到realm新版本发布
             - 当前版本：${{ steps.get-version.outputs.current_version }}
