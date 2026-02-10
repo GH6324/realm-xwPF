@@ -2,8 +2,8 @@ name: Update Realm Version
 
 on:
   schedule:
-    - cron: '0 * * * *'  # 每小时运行一次
-  workflow_dispatch:  # 支持手动触发
+    - cron: "0 * * * *" # 每小时运行一次
+  workflow_dispatch: # 支持手动触发
 
 jobs:
   update-realm-version:
@@ -39,8 +39,8 @@ jobs:
 
           # 从脚本中提取当前版本号
           CURRENT_VERSION=""
-          if [ -f "xwPF.sh" ]; then
-            CURRENT_VERSION=$(grep '^REALM_VERSION=' xwPF.sh | cut -d'"' -f2)
+          if [ -f "lib/core.sh" ]; then
+            CURRENT_VERSION=$(grep '^REALM_VERSION=' lib/core.sh | cut -d'"' -f2)
           fi
 
           if [ -z "$CURRENT_VERSION" ]; then
@@ -53,7 +53,7 @@ jobs:
           echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
 
           # 提取当前脚本版本号并计算新版本
-          CURRENT_SCRIPT_VERSION=$(grep '^SCRIPT_VERSION="' xwPF.sh | head -1 | cut -d'"' -f2)
+          CURRENT_SCRIPT_VERSION=$(grep '^SCRIPT_VERSION="' lib/core.sh | head -1 | cut -d'"' -f2)
           if [[ "$CURRENT_SCRIPT_VERSION" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
             MAJOR=${BASH_REMATCH[1]}
             MINOR=${BASH_REMATCH[2]}
@@ -89,27 +89,27 @@ jobs:
           echo "正在更新脚本版本号..."
 
           # 备份原文件
-          cp xwPF.sh xwPF.sh.backup
+          cp lib/core.sh lib/core.sh.backup
 
           # 更新REALM_VERSION变量
-          sed -i "s/^REALM_VERSION=\".*\"/REALM_VERSION=\"$LATEST_VERSION\"/" xwPF.sh
+          sed -i "s/^REALM_VERSION=\".*\"/REALM_VERSION=\"$LATEST_VERSION\"/" lib/core.sh
 
           # 更新SCRIPT_VERSION变量
-          sed -i "s/^SCRIPT_VERSION=\".*\"/SCRIPT_VERSION=\"$NEW_SCRIPT_VERSION\"/" xwPF.sh
+          sed -i "s/^SCRIPT_VERSION=\".*\"/SCRIPT_VERSION=\"$NEW_SCRIPT_VERSION\"/" lib/core.sh
 
           # 验证更新是否成功
-          NEW_REALM_VERSION=$(grep '^REALM_VERSION=' xwPF.sh | cut -d'"' -f2)
-          NEW_SCRIPT_VERSION_CHECK=$(grep '^SCRIPT_VERSION="' xwPF.sh | head -1 | cut -d'"' -f2)
+          NEW_REALM_VERSION=$(grep '^REALM_VERSION=' lib/core.sh | cut -d'"' -f2)
+          NEW_SCRIPT_VERSION_CHECK=$(grep '^SCRIPT_VERSION="' lib/core.sh | head -1 | cut -d'"' -f2)
 
           if [ "$NEW_REALM_VERSION" != "$LATEST_VERSION" ] || [ "$NEW_SCRIPT_VERSION_CHECK" != "$NEW_SCRIPT_VERSION" ]; then
             echo "❌ 版本号更新失败，恢复原文件"
-            mv xwPF.sh.backup xwPF.sh
+            mv lib/core.sh.backup lib/core.sh
             echo "update_success=false" >> $GITHUB_OUTPUT
             exit 0
           fi
 
           # 清理备份文件
-          rm -f xwPF.sh.backup
+          rm -f lib/core.sh.backup
 
           echo "✅ 版本号更新成功: $CURRENT_VERSION -> $LATEST_VERSION"
           echo "✅ 脚本版本更新成功: $NEW_SCRIPT_VERSION"

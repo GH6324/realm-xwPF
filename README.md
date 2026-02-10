@@ -290,7 +290,13 @@ IP地址：MPTCP协议需要知道可以使用哪些IP地址建立子流
 📦 系统文件
 ├── /usr/local/bin/
 │   ├── realm                    # Realm 主程序
-│   ├── xwPF.sh                  # 管理脚本主体
+│   ├── xwPF.sh                  # 管理脚本入口
+│   ├── lib/                     # 模块目录
+│   │   ├── core.sh              # 核心工具（系统检测/依赖/网络）
+│   │   ├── rules.sh             # 规则管理（CRUD/负载均衡/故障转移）
+│   │   ├── server.sh            # 服务器管理（配置导入导出/TLS/WS）
+│   │   ├── realm.sh             # Realm 安装/配置生成/服务管理
+│   │   └── ui.sh                # 交互菜单/状态显示/卸载
 │   ├── port-traffic-dog.sh      # 端口流量犬脚本
 │   ├── pf                       # 快捷启动命令
 │   └── dog                      # 端口流量犬快捷命令
@@ -311,7 +317,7 @@ IP地址：MPTCP协议需要知道可以使用哪些IP地址建立子流
 │   ├── notifications/           # 通知模块目录
 │   │   └── telegram.sh          # Telegram通知模块
 │   └── logs/                    # 日志目录
-│       └── traffic.log          # 流量日志
+│       └── notification.log     # 通知日志
 │
 ├── /etc/systemd/system/
 │   ├── realm.service            # 主服务文件
@@ -320,9 +326,6 @@ IP地址：MPTCP协议需要知道可以使用哪些IP地址建立子流
 │
 ├── /etc/sysctl.d/
 │   └── 90-enable-MPTCP.conf     # MPTCP系统配置文件
-│
-└── /var/log/
-    └── port-traffic-dog.log     # 端口流量犬日志
 ```
 
 ## 🤝 技术支持

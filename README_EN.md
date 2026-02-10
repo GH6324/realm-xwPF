@@ -290,7 +290,13 @@ File organization after complete installation:
 📦 System Files
 ├── /usr/local/bin/
 │   ├── realm                    # Realm main program
-│   ├── xwPF.sh                  # Management script
+│   ├── xwPF.sh                  # Management script entry
+│   ├── lib/                     # Module directory
+│   │   ├── core.sh              # Core utilities (system/deps/network)
+│   │   ├── rules.sh             # Rule management (CRUD/LB/failover)
+│   │   ├── server.sh            # Server management (import/export/TLS/WS)
+│   │   ├── realm.sh             # Realm install/config/service
+│   │   └── ui.sh                # Interactive menu/status/uninstall
 │   ├── port-traffic-dog.sh      # Port traffic monitor script
 │   ├── pf                       # Quick start command
 │   └── dog                      # Port traffic monitor shortcut
