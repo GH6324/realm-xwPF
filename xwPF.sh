@@ -1,6 +1,6 @@
 ﻿#!/bin/bash
 
-SCRIPT_VERSION="v2.1.9"
+SCRIPT_VERSION="v2.2.0"
 REALM_VERSION="v2.9.3"
 
 NAT_LISTEN_PORT=""
@@ -603,51 +603,6 @@ get_transport_config() {
     esac
 }
 
-# 支持多地址负载均衡：主地址+额外地址的realm配置格式
-generate_forward_endpoints_config() {
-    local target="$FORWARD_TARGET"
-    local listen_ip="::"
-
-    local transport_config=$(get_transport_config "$SECURITY_LEVEL" "$TLS_SERVER_NAME" "$TLS_CERT_PATH" "$TLS_KEY_PATH" "2" "$WS_PATH")
-    local transport_line=""
-    if [ -n "$transport_config" ]; then
-        transport_line=",
-            $transport_config"
-    fi
-
-    if [[ "$target" == *","* ]]; then
-        local port="${target##*:}"
-        local addresses_part="${target%:*}"
-        IFS=',' read -ra ip_addresses <<< "$addresses_part"
-
-        local main_address="${ip_addresses[0]}:$port"
-        local extra_addresses=""
-
-        if [ ${#ip_addresses[@]} -gt 1 ]; then
-            for ((i=1; i<${#ip_addresses[@]}; i++)); do
-                if [ -n "$extra_addresses" ]; then
-                    extra_addresses="$extra_addresses, "
-                fi
-                extra_addresses="$extra_addresses\"${ip_addresses[i]}:$port\""
-            done
-
-            extra_addresses=",
-        \"extra_remotes\": [$extra_addresses]"
-        fi
-
-        echo "
-        {
-            \"listen\": \"${listen_ip}:${EXIT_LISTEN_PORT}\",
-            \"remote\": \"${main_address}\"${extra_addresses}${transport_line}
-        }"
-    else
-        echo "
-        {
-            \"listen\": \"${listen_ip}:${EXIT_LISTEN_PORT}\",
-            \"remote\": \"${target}\"${transport_line}
-        }"
-    fi
-}
 
 init_rules_dir() {
     mkdir -p "$RULES_DIR"
@@ -858,62 +813,6 @@ get_balance_info_display() {
             balance_info=" ${WHITE}[off]${NC}"
             ;;
     esac
-    echo "$balance_info"
-}
-
-# 动态计算权重百分比，支持bc和awk两种计算方式确保兼容性
-get_balance_info_with_weight() {
-    local remote_host="$1"
-    local balance_mode="$2"
-    local weights="$3"
-    local target_index="$4"
-
-    local balance_info=""
-    case "$balance_mode" in
-        "roundrobin")
-            balance_info=" ${YELLOW}[轮询]${NC}"
-            ;;
-        "iphash")
-            balance_info=" ${BLUE}[IP哈希]${NC}"
-            ;;
-        *)
-            balance_info=" ${WHITE}[off]${NC}"
-            return 0
-            ;;
-    esac
-
-    if [[ "$remote_host" == *","* ]]; then
-        local weight_array
-        if [ -n "$weights" ]; then
-            IFS=',' read -ra weight_array <<< "$weights"
-        else
-            IFS=',' read -ra host_array <<< "$remote_host"
-            for ((i=0; i<${#host_array[@]}; i++)); do
-                weight_array[i]=1
-            done
-        fi
-
-        local total_weight=0
-        for w in "${weight_array[@]}"; do
-            total_weight=$((total_weight + w))
-        done
-
-        local current_weight="${weight_array[$((target_index-1))]:-1}"
-
-        local percentage
-        if [ "$total_weight" -gt 0 ]; then
-            if command -v bc >/dev/null 2>&1; then
-                percentage=$(echo "scale=1; $current_weight * 100 / $total_weight" | bc 2>/dev/null || echo "0.0")
-            else
-                percentage=$(awk "BEGIN {printf \"%.1f\", $current_weight * 100 / $total_weight}")
-            fi
-        else
-            percentage="0.0"
-        fi
-
-        balance_info="$balance_info ${GREEN}[权重: $current_weight]${NC} ${BLUE}($percentage%)${NC}"
-    fi
-
     echo "$balance_info"
 }
 
@@ -4987,69 +4886,6 @@ get_temp_dir() {
 
     # 如果都不可用，返回当前目录
     echo "."
-}
-
-# 系统诊断函数 - 虚拟化适配
-diagnose_system() {
-    echo -e "${YELLOW}=== 系统诊断信息 ===${NC}"
-
-    # 检测虚拟化环境
-    local virt_env=$(detect_virtualization)
-    echo -e "${BLUE}虚拟化环境: ${GREEN}${virt_env}${NC}"
-
-    # 检查磁盘空间
-    echo -e "${BLUE}磁盘空间:${NC}"
-    df -h . 2>/dev/null | head -2 || echo "无法获取磁盘信息"
-
-    # 检查内存使用
-    echo -e "${BLUE}内存使用:${NC}"
-    free -h 2>/dev/null | head -2 || echo "无法获取内存信息"
-
-    # 检查文件系统类型
-    echo -e "${BLUE}文件系统类型:${NC}"
-    local fs_type=$(df -T . 2>/dev/null | tail -1 | awk '{print $2}' || echo "未知")
-    echo "当前目录文件系统: $fs_type"
-
-    # 针对不同虚拟化环境的特殊检查
-    case "$virt_env" in
-        *"LXC"*|*"OpenVZ"*)
-            echo -e "${BLUE}容器特殊检查:${NC}"
-            echo "容器ID: $(cat /proc/self/cgroup 2>/dev/null | head -1 | cut -d: -f3 || echo '未知')"
-            echo "用户命名空间: $(readlink /proc/self/ns/user 2>/dev/null || echo '未知')"
-            # LXC/OpenVZ 特有的权限检查
-            if [ -e /proc/user_beancounters ]; then
-                echo "OpenVZ beancounters: 存在"
-            fi
-            ;;
-        *"Docker"*)
-            echo -e "${BLUE}Docker特殊检查:${NC}"
-            echo "容器ID: $(hostname 2>/dev/null || echo '未知')"
-            ;;
-    esac
-
-    # 测试文件写入（多个位置）
-    echo -e "${BLUE}文件写入测试:${NC}"
-    local write_locations=("." "/tmp" "/var/tmp")
-
-    for location in "${write_locations[@]}"; do
-        if [ -w "$location" ]; then
-            local test_file="${location}/test_write_$$"
-            if echo "test" > "$test_file" 2>/dev/null; then
-                echo -e "${GREEN}✓ ${location} 可写${NC}"
-                rm -f "$test_file"
-            else
-                echo -e "${RED}✗ ${location} 写入失败${NC}"
-            fi
-        else
-            echo -e "${YELLOW}⚠ ${location} 无写入权限${NC}"
-        fi
-    done
-
-    # 推荐的临时目录
-    local recommended_temp=$(get_temp_dir)
-    echo -e "${BLUE}推荐临时目录: ${GREEN}${recommended_temp}${NC}"
-
-    echo ""
 }
 
 
