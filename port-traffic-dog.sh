@@ -39,49 +39,10 @@ detect_system() {
 install_missing_tools() {
     local missing_tools=("$@")
     local system_type=$(detect_system)
-
-    echo -e "${YELLOW}检测到缺少工具: ${missing_tools[*]}${NC}"
-    echo "正在自动安装..."
-
+    local pkg_cmd
     case $system_type in
-        "ubuntu")
-            apt update -qq
-            for tool in "${missing_tools[@]}"; do
-                case $tool in
-                    "nft") apt install -y nftables ;;
-                    "tc") apt install -y iproute2 ;;
-                    "ss") apt install -y iproute2 ;;
-                    "jq") apt install -y jq ;;
-                    "awk") apt install -y gawk ;;
-                    "bc") apt install -y bc ;;
-                    "cron")
-                        apt install -y cron
-                        systemctl enable cron 2>/dev/null || true
-                        systemctl start cron 2>/dev/null || true
-                        ;;
-                    *) apt install -y "$tool" ;;
-                esac
-            done
-            ;;
-        "debian")
-            apt-get update -qq
-            for tool in "${missing_tools[@]}"; do
-                case $tool in
-                    "nft") apt-get install -y nftables ;;
-                    "tc") apt-get install -y iproute2 ;;
-                    "ss") apt-get install -y iproute2 ;;
-                    "jq") apt-get install -y jq ;;
-                    "awk") apt-get install -y gawk ;;
-                    "bc") apt-get install -y bc ;;
-                    "cron")
-                        apt-get install -y cron
-                        systemctl enable cron 2>/dev/null || true
-                        systemctl start cron 2>/dev/null || true
-                        ;;
-                    *) apt-get install -y "$tool" ;;
-                esac
-            done
-            ;;
+        "ubuntu") pkg_cmd="apt" ;;
+        "debian") pkg_cmd="apt-get" ;;
         *)
             echo -e "${RED}不支持的系统类型: $system_type${NC}"
             echo "支持的系统: Ubuntu, Debian"
@@ -89,6 +50,27 @@ install_missing_tools() {
             exit 1
             ;;
     esac
+
+    echo -e "${YELLOW}检测到缺少工具: ${missing_tools[*]}${NC}"
+    echo "正在自动安装..."
+
+    $pkg_cmd update -qq
+    for tool in "${missing_tools[@]}"; do
+        case $tool in
+            "nft") $pkg_cmd install -y nftables ;;
+            "tc") $pkg_cmd install -y iproute2 ;;
+            "ss") $pkg_cmd install -y iproute2 ;;
+            "jq") $pkg_cmd install -y jq ;;
+            "awk") $pkg_cmd install -y gawk ;;
+            "bc") $pkg_cmd install -y bc ;;
+            "cron")
+                $pkg_cmd install -y cron
+                systemctl enable cron 2>/dev/null || true
+                systemctl start cron 2>/dev/null || true
+                ;;
+            *) $pkg_cmd install -y "$tool" ;;
+        esac
+    done
 
     echo -e "${GREEN}依赖工具安装完成${NC}"
 }
@@ -405,17 +387,17 @@ get_nftables_counter_data() {
         local port_safe=$(echo "$port" | tr '-' '_')
         if [ "$billing_mode" = "double" ]; then
             input_bytes=$(nft list counter $family $table_name "port_${port_safe}_in" 2>/dev/null | \
-                grep -o 'bytes [0-9]*' | awk '{print $2}')
+                grep -o 'bytes [0-9]*' | awk '{print $2}' || true)
         fi
         output_bytes=$(nft list counter $family $table_name "port_${port_safe}_out" 2>/dev/null | \
-            grep -o 'bytes [0-9]*' | awk '{print $2}')
+            grep -o 'bytes [0-9]*' | awk '{print $2}' || true)
     else
         if [ "$billing_mode" = "double" ]; then
             input_bytes=$(nft list counter $family $table_name "port_${port}_in" 2>/dev/null | \
-                grep -o 'bytes [0-9]*' | awk '{print $2}')
+                grep -o 'bytes [0-9]*' | awk '{print $2}' || true)
         fi
         output_bytes=$(nft list counter $family $table_name "port_${port}_out" 2>/dev/null | \
-            grep -o 'bytes [0-9]*' | awk '{print $2}')
+            grep -o 'bytes [0-9]*' | awk '{print $2}' || true)
     fi
 
     input_bytes=${input_bytes:-0}
@@ -423,9 +405,6 @@ get_nftables_counter_data() {
     echo "$input_bytes $output_bytes"
 }
 
-get_port_traffic() {
-    get_nftables_counter_data "$1"
-}
 
 
 save_traffic_data() {
@@ -496,7 +475,7 @@ restore_monitoring_if_needed() {
 
     if [ "$need_restore" = "true" ]; then
         restore_traffic_data_from_backup
-        restore_all_monitoring_rules >/dev/null 2>&1
+        restore_all_monitoring_rules >/dev/null 2>&1 || true
     fi
 }
 
@@ -561,15 +540,7 @@ restore_all_monitoring_rules() {
         local limit_enabled=$(jq -r ".ports.\"$port\".bandwidth_limit.enabled // false" "$CONFIG_FILE")
         local rate_limit=$(jq -r ".ports.\"$port\".bandwidth_limit.rate // \"unlimited\"" "$CONFIG_FILE")
         if [ "$limit_enabled" = "true" ] && [ "$rate_limit" != "unlimited" ]; then
-            local limit_lower=$(echo "$rate_limit" | tr '[:upper:]' '[:lower:]')
-            local tc_limit
-            if [[ "$limit_lower" =~ kbps$ ]]; then
-                tc_limit=$(echo "$limit_lower" | sed 's/kbps$/kbit/')
-            elif [[ "$limit_lower" =~ mbps$ ]]; then
-                tc_limit=$(echo "$limit_lower" | sed 's/mbps$/mbit/')
-            elif [[ "$limit_lower" =~ gbps$ ]]; then
-                tc_limit=$(echo "$limit_lower" | sed 's/gbps$/gbit/')
-            fi
+            local tc_limit=$(convert_bandwidth_to_tc "$rate_limit")
             if [ -n "$tc_limit" ]; then
                 apply_tc_limit "$port" "$tc_limit"
             fi
@@ -674,7 +645,7 @@ get_port_status_label() {
 
 get_port_monthly_usage() {
     local port=$1
-    local traffic_data=($(get_port_traffic "$port"))
+    local traffic_data=($(get_nftables_counter_data "$port"))
     local input_bytes=${traffic_data[0]}
     local output_bytes=${traffic_data[1]}
     local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
@@ -779,6 +750,19 @@ parse_tc_rate_to_kbps() {
     fi
 }
 
+# 将用户输入的带宽值(Kbps/Mbps/Gbps)转换为TC格式(kbit/mbit/gbit)
+convert_bandwidth_to_tc() {
+    local rate="$1"
+    local lower=$(echo "$rate" | tr '[:upper:]' '[:lower:]')
+    if [[ "$lower" =~ kbps$ ]]; then
+        echo "${lower/%kbps/kbit}"
+    elif [[ "$lower" =~ mbps$ ]]; then
+        echo "${lower/%mbps/mbit}"
+    elif [[ "$lower" =~ gbps$ ]]; then
+        echo "${lower/%gbps/gbit}"
+    fi
+}
+
 generate_tc_class_id() {
     local port=$1
     if is_port_range "$port"; then
@@ -795,7 +779,7 @@ get_daily_total_traffic() {
     local total_bytes=0
     local ports=($(get_active_ports))
     for port in "${ports[@]}"; do
-        local traffic_data=($(get_port_traffic "$port"))
+        local traffic_data=($(get_nftables_counter_data "$port"))
         local input_bytes=${traffic_data[0]}
         local output_bytes=${traffic_data[1]}
         local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
@@ -811,7 +795,7 @@ format_port_list() {
     local result=""
 
     for port in "${active_ports[@]}"; do
-        local traffic_data=($(get_port_traffic "$port"))
+        local traffic_data=($(get_nftables_counter_data "$port"))
         local input_bytes=${traffic_data[0]}
         local output_bytes=${traffic_data[1]}
         local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
@@ -1409,15 +1393,7 @@ set_port_bandwidth_limit() {
         fi
 
         # 转换为TC格式
-        local tc_limit
-        local limit_lower=$(echo "$limit" | tr '[:upper:]' '[:lower:]')
-        if [[ "$limit_lower" =~ kbps$ ]]; then
-            tc_limit=$(echo "$limit_lower" | sed 's/kbps$/kbit/')
-        elif [[ "$limit_lower" =~ mbps$ ]]; then
-            tc_limit=$(echo "$limit_lower" | sed 's/mbps$/mbit/')
-        elif [[ "$limit_lower" =~ gbps$ ]]; then
-            tc_limit=$(echo "$limit_lower" | sed 's/gbps$/gbit/')
-        fi
+        local tc_limit=$(convert_bandwidth_to_tc "$limit")
 
         apply_tc_limit "$port" "$tc_limit"
 
@@ -1632,7 +1608,7 @@ change_port_billing_mode() {
     echo -e "${YELLOW}正在应用 $new_display 模式...${NC}"
     
     # 读取当前流量
-    local traffic_data=($(get_port_traffic "$target_port"))
+    local traffic_data=($(get_nftables_counter_data "$target_port"))
     local saved_input=${traffic_data[0]:-0}
     local saved_output=${traffic_data[1]:-0}
     echo -e "  读取流量: 上行=$(format_bytes $saved_input), 下行=$(format_bytes $saved_output)"
@@ -1674,7 +1650,7 @@ apply_nftables_quota() {
     local quota_bytes=$(parse_size_to_bytes "$quota_limit")
 
     # 使用当前流量作为配额初始值，避免重置后立即触发限制
-    local current_traffic=($(get_port_traffic "$port"))
+    local current_traffic=($(get_nftables_counter_data "$port"))
     local current_input=${current_traffic[0]}
     local current_output=${current_traffic[1]}
     local current_total=$(calculate_total_traffic "$current_input" "$current_output" "$billing_mode")
@@ -1949,6 +1925,12 @@ set_reset_day() {
             remove_port_auto_reset_cron "$port"
             echo -e "${GREEN}端口 $port 已取消自动重置${NC}"
         else
+            # 无流量配额的端口不需要自动重置
+            local monthly_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE")
+            if [ "$monthly_limit" = "unlimited" ]; then
+                echo -e "${YELLOW}端口 $port 未设置流量配额，请先通过「端口限制设置管理→设置端口流量配额」设置配额后再设置重置日${NC}"
+                continue
+            fi
             update_config ".ports.\"$port\".quota.reset_day = $reset_day"
             setup_port_auto_reset_cron "$port"
             echo -e "${GREEN}端口 $port 月重置日设置成功: 每月${reset_day}日${NC}"
@@ -2001,7 +1983,7 @@ immediate_reset() {
     echo "将重置以下端口的流量统计:"
     local total_all_traffic=0
     for port in "${ports_to_reset[@]}"; do
-        local traffic_data=($(get_port_traffic "$port"))
+        local traffic_data=($(get_nftables_counter_data "$port"))
         local input_bytes=${traffic_data[0]}
         local output_bytes=${traffic_data[1]}
         local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"single\"" "$CONFIG_FILE")
@@ -2021,7 +2003,7 @@ immediate_reset() {
         local reset_count=0
         for port in "${ports_to_reset[@]}"; do
             # 获取当前流量用于记录
-            local traffic_data=($(get_port_traffic "$port"))
+            local traffic_data=($(get_nftables_counter_data "$port"))
             local input_bytes=${traffic_data[0]}
             local output_bytes=${traffic_data[1]}
             local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"single\"" "$CONFIG_FILE")
@@ -2049,7 +2031,7 @@ immediate_reset() {
 auto_reset_port() {
     local port="$1"
 
-    local traffic_data=($(get_port_traffic "$port"))
+    local traffic_data=($(get_nftables_counter_data "$port"))
     local input_bytes=${traffic_data[0]}
     local output_bytes=${traffic_data[1]}
     local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
@@ -2328,15 +2310,7 @@ import_config() {
         local limit_enabled=$(jq -r ".ports.\"$port\".bandwidth_limit.enabled // false" "$CONFIG_FILE")
         local rate_limit=$(jq -r ".ports.\"$port\".bandwidth_limit.rate // \"unlimited\"" "$CONFIG_FILE")
         if [ "$limit_enabled" = "true" ] && [ "$rate_limit" != "unlimited" ]; then
-            local limit_lower=$(echo "$rate_limit" | tr '[:upper:]' '[:lower:]')
-            local tc_limit
-            if [[ "$limit_lower" =~ kbps$ ]]; then
-                tc_limit=$(echo "$limit_lower" | sed 's/kbps$/kbit/')
-            elif [[ "$limit_lower" =~ mbps$ ]]; then
-                tc_limit=$(echo "$limit_lower" | sed 's/mbps$/mbit/')
-            elif [[ "$limit_lower" =~ gbps$ ]]; then
-                tc_limit=$(echo "$limit_lower" | sed 's/gbps$/gbit/')
-            fi
+            local tc_limit=$(convert_bandwidth_to_tc "$rate_limit")
             if [ -n "$tc_limit" ]; then
                 apply_tc_limit "$port" "$tc_limit"
             fi
@@ -2806,9 +2780,44 @@ send_status_notification() {
 
 main() {
     check_root
+
+    # cron 快速路径：跳过重型初始化（依赖检查、通知模块下载、规则恢复等）
+    if [ $# -gt 0 ]; then
+        case $1 in
+            --reset-port)
+                if [ $# -lt 2 ]; then
+                    echo -e "${RED}错误：--reset-port 需要指定端口号${NC}"
+                    exit 1
+                fi
+                auto_reset_port "$2"
+                exit 0
+                ;;
+            --send-telegram-status)
+                local telegram_script="$CONFIG_DIR/notifications/telegram.sh"
+                if [ -f "$telegram_script" ]; then
+                    source "$telegram_script"
+                    telegram_send_status_notification
+                fi
+                exit 0
+                ;;
+            --send-wecom-status)
+                local wecom_script="$CONFIG_DIR/notifications/wecom.sh"
+                if [ -f "$wecom_script" ]; then
+                    source "$wecom_script"
+                    wecom_send_status_notification
+                fi
+                exit 0
+                ;;
+            --send-status)
+                send_status_notification
+                exit 0
+                ;;
+        esac
+    fi
+
+    # 完整启动流程（交互式菜单和其余命令需要）
     check_dependencies
     init_config
-
     create_shortcut_command
 
     if [ $# -gt 0 ]; then
@@ -2829,34 +2838,6 @@ main() {
                 ;;
             --uninstall)
                 uninstall_script
-                exit 0
-                ;;
-            --send-status)
-                send_status_notification
-                exit 0
-                ;;
-            --send-telegram-status)
-                local telegram_script="$CONFIG_DIR/notifications/telegram.sh"
-                if [ -f "$telegram_script" ]; then
-                    source "$telegram_script"
-                    telegram_send_status_notification
-                fi
-                exit 0
-                ;;
-            --send-wecom-status)
-                local wecom_script="$CONFIG_DIR/notifications/wecom.sh"
-                if [ -f "$wecom_script" ]; then
-                    source "$wecom_script"
-                    wecom_send_status_notification
-                fi
-                exit 0
-                ;;
-            --reset-port)
-                if [ $# -lt 2 ]; then
-                    echo -e "${RED}错误：--reset-port 需要指定端口号${NC}"
-                    exit 1
-                fi
-                auto_reset_port "$2"
                 exit 0
                 ;;
             *)
