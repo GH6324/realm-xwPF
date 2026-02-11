@@ -1,4 +1,36 @@
 
+# ---- 服务管理抽象层 ----
+svc_start()        { if [ "$INIT_SYSTEM" = "openrc" ]; then rc-service realm start;   else systemctl start realm;   fi; }
+svc_stop()         { if [ "$INIT_SYSTEM" = "openrc" ]; then rc-service realm stop;    else systemctl stop realm;    fi; }
+svc_restart()      { if [ "$INIT_SYSTEM" = "openrc" ]; then rc-service realm restart; else systemctl restart realm; fi; }
+svc_enable()       { if [ "$INIT_SYSTEM" = "openrc" ]; then rc-update add realm default >/dev/null 2>&1; else systemctl enable realm >/dev/null 2>&1;  fi; }
+svc_disable()      { if [ "$INIT_SYSTEM" = "openrc" ]; then rc-update del realm default >/dev/null 2>&1; else systemctl disable realm >/dev/null 2>&1; fi; }
+svc_daemon_reload() { [ "$INIT_SYSTEM" = "systemd" ] && systemctl daemon-reload; }
+svc_is_active() {
+    if [ "$INIT_SYSTEM" = "openrc" ]; then rc-service realm status >/dev/null 2>&1; return $?
+    else local s=$(systemctl is-active realm 2>/dev/null); [ "$s" = "active" ]; fi
+}
+svc_status_text() {
+    if [ "$INIT_SYSTEM" = "openrc" ]; then
+        if rc-service realm status >/dev/null 2>&1; then echo "active"; else echo "inactive"; fi
+    else systemctl is-active realm 2>/dev/null; fi
+}
+svc_enabled_text() {
+    if [ "$INIT_SYSTEM" = "openrc" ]; then
+        if rc-update show default 2>/dev/null | grep -q realm; then echo "enabled"; else echo "disabled"; fi
+    else systemctl is-enabled realm 2>/dev/null; fi
+}
+svc_status_detail() {
+    if [ "$INIT_SYSTEM" = "openrc" ]; then rc-service realm status
+    else systemctl status realm --no-pager -l; fi
+}
+svc_logs() {
+    if [ "$INIT_SYSTEM" = "openrc" ]; then
+        echo -e "${YELLOW}OpenRC 环境，使用系统日志:${NC}"
+        tail -f /var/log/messages 2>/dev/null || echo -e "${RED}日志文件不可用${NC}"
+    else journalctl -u realm -f --no-pager; fi
+}
+
 # 检测虚拟化环境
 detect_virtualization() {
     local virt_type="物理机"
@@ -32,43 +64,6 @@ detect_virtualization() {
     fi
 
     echo "$virt_type"
-}
-
-# 获取适合的临时目录（针对不同虚拟化环境）
-get_temp_dir() {
-    local virt_env=$(detect_virtualization)
-    local temp_candidates=()
-
-    # 根据虚拟化环境选择最佳临时目录
-    case "$virt_env" in
-        *"LXC"*|*"OpenVZ"*)
-            # 容器环境优先使用 /var/tmp，避免权限问题
-            temp_candidates=("/var/tmp" "/tmp" ".")
-            ;;
-        *"Docker"*)
-            # Docker 环境优先使用当前目录
-            temp_candidates=("." "/tmp" "/var/tmp")
-            ;;
-        *)
-            # 其他环境使用标准顺序
-            temp_candidates=("/tmp" "/var/tmp" ".")
-            ;;
-    esac
-
-    # 测试每个候选目录
-    for dir in "${temp_candidates[@]}"; do
-        if [ -w "$dir" ]; then
-            local test_file="${dir}/test_write_$$"
-            if echo "test" > "$test_file" 2>/dev/null; then
-                rm -f "$test_file"
-                echo "$dir"
-                return 0
-            fi
-        fi
-    done
-
-    # 如果都不可用，返回当前目录
-    echo "."
 }
 
 
@@ -111,7 +106,7 @@ restart_realm_service() {
 
     if [ "$was_running" = true ] || [ "$is_update" = true ]; then
         echo -e "${YELLOW}正在启动realm服务...${NC}"
-        if systemctl start realm >/dev/null 2>&1; then
+        if svc_start >/dev/null 2>&1; then
             echo -e "${GREEN}✓ realm服务已启动${NC}"
         else
             echo -e "${YELLOW}服务启动失败，尝试重新初始化...${NC}"
@@ -162,9 +157,9 @@ compare_and_ask_update() {
 safe_stop_realm_service() {
     local service_was_running=false
 
-    if systemctl is-active realm >/dev/null 2>&1; then
+    if svc_is_active; then
         echo -e "${BLUE}检测到realm服务正在运行，正在停止服务...${NC}"
-        if systemctl stop realm >/dev/null 2>&1; then
+        if svc_stop >/dev/null 2>&1; then
             echo -e "${GREEN}✓ realm服务已停止${NC}"
             service_was_running=true
         else
@@ -233,12 +228,18 @@ install_realm() {
         fi
         
         ARCH=$(uname -m)
+        # 检测 libc 类型（Alpine 使用 musl）
+        local libc_suffix="gnu"
+        if [ -f /etc/alpine-release ]; then
+            libc_suffix="musl"
+        fi
+
         case $ARCH in
             x86_64)
-                ARCH="x86_64-unknown-linux-gnu"
+                ARCH="x86_64-unknown-linux-${libc_suffix}"
                 ;;
             aarch64)
-                ARCH="aarch64-unknown-linux-gnu"
+                ARCH="aarch64-unknown-linux-${libc_suffix}"
                 ;;
             armv7l|armv6l|arm)
                 ARCH="armv7-unknown-linux-gnueabihf"
@@ -288,128 +289,6 @@ install_realm() {
         echo -e "${RED}✗ 安装失败${NC}"
         exit 1
     fi
-}
-
-# 生成单个规则的endpoint配置（支持多地址和负载均衡）
-generate_rule_endpoint_config() {
-    local remote_host="$1"
-    local remote_port="$2"
-    local listen_port="$3"
-    local security_level="$4"
-    local tls_server_name="$5"
-    local tls_cert_path="$6"
-    local tls_key_path="$7"
-    local balance_mode="$8"
-    local target_states="$9"
-
-    local endpoint_config=""
-    local listen_ip_val="${LISTEN_IP:-${NAT_LISTEN_IP:-::}}"
-    local listen_field=""
-    
-    # 判断listen_ip_val是IP还是网卡接口
-    if validate_ip "$listen_ip_val"; then
-        listen_field="\"listen\": \"${listen_ip_val}:${listen_port}\""
-    else
-        # 是网卡接口
-        listen_field="\"listen\": \"0.0.0.0:${listen_port}\",
-            \"listen_interface\": \"${listen_ip_val}\""
-    fi
-
-    # 检查是否为多地址
-    if [[ "$remote_host" == *","* ]]; then
-        # 多地址配置：使用主地址+额外地址
-        IFS=',' read -ra addresses <<< "$remote_host"
-        local main_address="${addresses[0]}"
-        local extra_addresses=""
-        local enabled_addresses=()
-
-        # 根据TARGET_STATES过滤启用的地址
-        enabled_addresses+=("$main_address")  # 主地址默认启用
-
-        if [ ${#addresses[@]} -gt 1 ]; then
-            for ((i=1; i<${#addresses[@]}; i++)); do
-                local is_enabled=$(is_target_enabled "$i" "$target_states")
-
-                if [ "$is_enabled" = "true" ]; then
-                    enabled_addresses+=("${addresses[i]}")
-                fi
-            done
-        fi
-
-        # 构建额外地址字符串（只包含启用的地址）
-        if [ ${#enabled_addresses[@]} -gt 1 ]; then
-            for ((i=1; i<${#enabled_addresses[@]}; i++)); do
-                if [ -n "$extra_addresses" ]; then
-                    extra_addresses="$extra_addresses, "
-                fi
-                extra_addresses="$extra_addresses\"${enabled_addresses[i]}:${remote_port}\""
-            done
-
-            extra_addresses=",
-            \"extra_remotes\": [$extra_addresses]"
-        fi
-
-        endpoint_config="
-        {
-            ${listen_field},
-            \"remote\": \"${enabled_addresses[0]}:${remote_port}\"${extra_addresses}"
-    else
-        # 单地址配置
-        endpoint_config="
-        {
-            ${listen_field},
-            \"remote\": \"${remote_host}:${remote_port}\""
-    fi
-
-    # 添加through字段（仅中转服务器）
-    local role="${RULE_ROLE:-1}"
-    if [ "$role" = "1" ] && [ -n "$THROUGH_IP" ] && [ "$THROUGH_IP" != "::" ]; then
-        if validate_ip "$THROUGH_IP"; then
-            endpoint_config="$endpoint_config,
-            \"through\": \"$THROUGH_IP\""
-        else
-            # 是网卡接口
-            endpoint_config="$endpoint_config,
-            \"interface\": \"$THROUGH_IP\""
-        fi
-    fi
-
-    # 添加负载均衡配置（仅用于单规则多地址情况）
-    if [ -n "$balance_mode" ] && [ "$balance_mode" != "off" ] && [[ "$remote_host" == *","* ]]; then
-        # 计算地址数量并生成权重
-        IFS=',' read -ra addr_array <<< "$remote_host"
-        local weights=""
-        for ((i=0; i<${#addr_array[@]}; i++)); do
-            if [ -n "$weights" ]; then
-                weights="$weights, "
-            fi
-            weights="${weights}1"  # 默认权重为1（相等权重）
-        done
-
-        endpoint_config="$endpoint_config,
-            \"balance\": \"$balance_mode: $weights\""
-    fi
-
-    # 添加传输配置 - 需要角色信息
-    # 通过全局变量RULE_ROLE获取角色，如果没有则通过REMOTE_HOST判断
-    local role="${RULE_ROLE:-1}"  # 默认为中转服务器
-    if [ -z "$RULE_ROLE" ]; then
-        # 如果没有RULE_ROLE，通过是否有FORWARD_TARGET判断
-        if [ -n "$FORWARD_TARGET" ]; then
-            role="2"  # 出口服务器
-        fi
-    fi
-
-    local transport_config=$(get_transport_config "$security_level" "$TLS_SERVER_NAME" "$tls_cert_path" "$tls_key_path" "$role" "$WS_PATH")
-    if [ -n "$transport_config" ]; then
-        endpoint_config="$endpoint_config,
-            $transport_config"
-    fi
-
-    endpoint_config="$endpoint_config
-        }"
-
-    echo "$endpoint_config"
 }
 
 # 从规则生成endpoints配置（支持负载均衡合并和故障转移）
@@ -925,9 +804,23 @@ generate_realm_config() {
     done
 }
 
-generate_systemd_service() {
-    echo -e "${YELLOW}正在生成 systemd 服务文件...${NC}"
-    cat > "$SYSTEMD_PATH" <<EOF
+generate_service_file() {
+    if [ "$INIT_SYSTEM" = "openrc" ]; then
+        echo -e "${YELLOW}正在生成 OpenRC 服务文件...${NC}"
+        cat > /etc/init.d/realm <<'SVCEOF'
+#!/sbin/openrc-run
+name="realm-xwpf"
+command="/usr/local/bin/realm"
+command_args="-c /etc/realm/config.json"
+command_background=true
+pidfile="/run/${RC_SVCNAME}.pid"
+depend() { need net; }
+SVCEOF
+        chmod +x /etc/init.d/realm
+        echo -e "${GREEN}✓ OpenRC 服务文件已生成${NC}"
+    else
+        echo -e "${YELLOW}正在生成 systemd 服务文件...${NC}"
+        cat > "$SYSTEMD_PATH" <<EOF
 [Unit]
 Description=realm-xwpf
 After=network.target
@@ -942,9 +835,10 @@ RestartSec=3s
 WantedBy=multi-user.target
 EOF
 
-    echo -e "${GREEN}✓ systemd 服务文件已生成${NC}"
-    systemctl daemon-reload
-    echo -e "${GREEN}✓ systemd 服务已重新加载${NC}"
+        echo -e "${GREEN}✓ systemd 服务文件已生成${NC}"
+        systemctl daemon-reload
+        echo -e "${GREEN}✓ systemd 服务已重新加载${NC}"
+    fi
 }
 
 # 启动空服务（让脚本能识别已安装状态）
@@ -959,10 +853,10 @@ start_empty_service() {
 }
 EOF
 
-    generate_systemd_service
+    generate_service_file
 
-    systemctl enable realm >/dev/null 2>&1
-    systemctl start realm >/dev/null 2>&1
+    svc_enable
+    svc_start >/dev/null 2>&1
 }
 
 # 安装和配置流程
@@ -997,7 +891,7 @@ smart_install() {
 service_stop() {
     echo -e "${YELLOW}正在停止 Realm 服务...${NC}"
 
-    if systemctl stop realm; then
+    if svc_stop; then
         echo -e "${GREEN}✓ Realm 服务已停止${NC}"
     else
         echo -e "${RED}✗ Realm 服务停止失败${NC}"
@@ -1018,124 +912,11 @@ service_restart() {
     echo -e "${BLUE}重新生成配置文件...${NC}"
     generate_realm_config
 
-    if systemctl restart realm; then
+    if svc_restart; then
         echo -e "${GREEN}✓ Realm 服务重启成功${NC}"
     else
         echo -e "${RED}✗ Realm 服务重启失败${NC}"
-        echo -e "${BLUE}查看详细错误信息:${NC}"
-        systemctl status realm --no-pager -l
+        svc_status_detail
         return 1
     fi
-}
-
-# 服务管理
-service_status() {
-    echo -e "${YELLOW}Realm 服务状态:${NC}"
-    echo ""
-
-    # 获取服务状态
-    local status=$(systemctl is-active realm 2>/dev/null)
-    local enabled=$(systemctl is-enabled realm 2>/dev/null)
-
-    # 显示基本状态
-    if [ "$status" = "active" ]; then
-        echo -e "运行状态: ${GREEN}●${NC} 运行中"
-    elif [ "$status" = "inactive" ]; then
-        echo -e "运行状态: ${RED}●${NC} 已停止"
-    elif [ "$status" = "failed" ]; then
-        echo -e "运行状态: ${RED}●${NC} 运行失败"
-    else
-        echo -e "运行状态: ${YELLOW}●${NC} $status"
-    fi
-
-    if [ "$enabled" = "enabled" ]; then
-        echo -e "开机启动: ${GREEN}已启用${NC}"
-    else
-        echo -e "开机启动: ${YELLOW}未启用${NC}"
-    fi
-
-    echo ""
-    echo -e "${BLUE}配置信息:${NC}"
-
-    # 检查是否有规则配置
-    local has_rules=false
-    local enabled_count=0
-
-    if [ -d "$RULES_DIR" ]; then
-        for rule_file in "${RULES_DIR}"/rule-*.conf; do
-            if [ -f "$rule_file" ]; then
-                if read_rule_file "$rule_file" && [ "$ENABLED" = "true" ]; then
-                    has_rules=true
-                    enabled_count=$((enabled_count + 1))
-                fi
-            fi
-        done
-    fi
-
-    if [ "$has_rules" = true ]; then
-        echo -e "配置模式: ${GREEN}多规则模式${NC}"
-        echo -e "启用规则: ${GREEN}$enabled_count${NC} 个"
-        echo ""
-        echo -e "${BLUE}活跃规则列表:${NC}"
-
-        for rule_file in "${RULES_DIR}"/rule-*.conf; do
-            if [ -f "$rule_file" ]; then
-                if read_rule_file "$rule_file" && [ "$ENABLED" = "true" ]; then
-                    # 根据规则角色使用不同的字段
-                    if [ "$RULE_ROLE" = "2" ]; then
-                        # 服务端服务器使用FORWARD_TARGET
-                        local target_host="${FORWARD_TARGET%:*}"
-                        local target_port="${FORWARD_TARGET##*:}"
-                        local display_target=$(smart_display_target "$target_host")
-                        local display_ip="::"
-                        echo -e "  ${GREEN}$RULE_NAME${NC}: ${LISTEN_IP:-$display_ip}:$LISTEN_PORT → $display_target:$target_port"
-                    else
-                        # 中转服务器使用REMOTE_HOST
-                        local display_target=$(smart_display_target "$REMOTE_HOST")
-                        local display_ip="${NAT_LISTEN_IP:-::}"
-                        local through_display="${THROUGH_IP:-::}"
-                        echo -e "  ${GREEN}$RULE_NAME${NC}: ${LISTEN_IP:-$display_ip}:$LISTEN_PORT → $through_display → $display_target:$REMOTE_PORT"
-                    fi
-                    # 构建安全级别显示
-                    local security_display=$(get_security_display "$SECURITY_LEVEL" "$WS_PATH" "$WS_HOST")
-                    local note_display=""
-                    if [ -n "$RULE_NOTE" ]; then
-                        note_display=" | 备注: ${GREEN}$RULE_NOTE${NC}"
-                    fi
-                    # 显示状态信息
-                    get_rule_status_display "$security_display" "$note_display"
-
-                fi
-            fi
-        done
-    fi
-
-    # 显示端口监听状态
-    echo ""
-    echo -e "${BLUE}端口监听状态:${NC}"
-
-    # 检查端口监听状态
-    if [ "$has_rules" = true ]; then
-        # 多规则模式：检查所有启用规则的端口
-        for rule_file in "${RULES_DIR}"/rule-*.conf; do
-            if [ -f "$rule_file" ]; then
-                if read_rule_file "$rule_file" && [ "$ENABLED" = "true" ]; then
-                    if [ "$RULE_ROLE" = "2" ]; then
-                        local display_ip="::"
-                    else
-                        local display_ip="${NAT_LISTEN_IP:-::}"
-                    fi
-                    if ss -tlnp 2>/dev/null | grep -q ":${LISTEN_PORT} "; then
-                        echo -e "端口 ${LISTEN_IP:-$display_ip}:$LISTEN_PORT ($RULE_NAME): ${GREEN}正在监听${NC}"
-                    else
-                        echo -e "端口 ${LISTEN_IP:-$display_ip}:$LISTEN_PORT ($RULE_NAME): ${RED}未监听${NC}"
-                    fi
-                fi
-            fi
-        done
-    fi
-
-    echo ""
-    echo -e "${BLUE}详细状态信息:${NC}"
-    systemctl status realm --no-pager -l
 }

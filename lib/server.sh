@@ -220,7 +220,7 @@ EOF
     fi
 
     # 避免mptcpd服务与内核路径管理器冲突
-    if systemctl is-active mptcpd >/dev/null 2>&1; then
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-active mptcpd >/dev/null 2>&1; then
         echo -e "${YELLOW}检测到mptcpd服务，正在停止...${NC}"
         systemctl stop mptcpd 2>/dev/null || true
         systemctl disable mptcpd 2>/dev/null || true

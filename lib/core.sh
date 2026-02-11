@@ -23,6 +23,11 @@ RULE_NAME=""
 
 REQUIRED_TOOLS=("curl" "wget" "tar" "grep" "cut" "bc" "jq")
 
+# 系统标识（由 detect_system 设置）
+DISTRO=""        # debian | alpine | centos
+PKG_MGR=""       # apt-get | apk | yum/dnf
+INIT_SYSTEM=""   # systemd | openrc
+
 # 通用的字段初始化函数
 init_rule_field() {
     local field_name="$1"
@@ -124,33 +129,75 @@ check_root() {
     fi
 }
 
-# 检测系统类型（仅支持Debian/Ubuntu）
+# 检测系统类型（支持 Debian/Ubuntu、Alpine、CentOS/RHEL）
 detect_system() {
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        OS=$NAME
-        VER=$VERSION_ID
-    elif type lsb_release >/dev/null 2>&1; then
-        OS=$(lsb_release -si)
-        VER=$(lsb_release -sr)
+    if [ ! -f /etc/os-release ]; then
+        echo -e "${RED}错误: 无法识别系统（缺少 /etc/os-release）${NC}"
+        exit 1
+    fi
+    . /etc/os-release
+    OS=$NAME
+    VER=$VERSION_ID
+
+    case "$ID" in
+        debian|ubuntu)
+            DISTRO="debian" ;;
+        alpine)
+            DISTRO="alpine" ;;
+        centos|rhel|rocky|almalinux|fedora)
+            DISTRO="centos" ;;
+        *)
+            echo -e "${RED}错误: 不支持的系统: $ID${NC}"
+            echo -e "${YELLOW}当前支持: Debian/Ubuntu, Alpine, CentOS/RHEL${NC}"
+            exit 1 ;;
+    esac
+
+    # 包管理器
+    if command -v apt-get >/dev/null 2>&1; then PKG_MGR="apt-get"
+    elif command -v apk >/dev/null 2>&1; then PKG_MGR="apk"
+    elif command -v dnf >/dev/null 2>&1; then PKG_MGR="dnf"
+    elif command -v yum >/dev/null 2>&1; then PKG_MGR="yum"
     else
-        OS=$(uname -s)
-        VER=$(uname -r)
+        echo -e "${RED}错误: 未找到支持的包管理器${NC}"
+        exit 1
     fi
 
-    if ! command -v apt-get >/dev/null 2>&1; then
-        echo -e "${RED}错误: 当前仅支持 Ubuntu/Debian 系统${NC}"
-        echo -e "${YELLOW}检测到系统: $OS $VER${NC}"
+    # init 系统
+    if command -v systemctl >/dev/null 2>&1; then INIT_SYSTEM="systemd"
+    elif command -v rc-service >/dev/null 2>&1; then INIT_SYSTEM="openrc"
+    else
+        echo -e "${RED}错误: 未找到支持的 init 系统${NC}"
         exit 1
     fi
 }
 
 check_netcat_openbsd() {
+    [ "$DISTRO" != "debian" ] && return 0
     dpkg -l netcat-openbsd >/dev/null 2>&1
     return $?
 }
 
-# 强制使用netcat-openbsd：传统netcat缺少-z选项，会导致端口检测失败
+# 统一包安装分发
+_pkg_install() {
+    case "$PKG_MGR" in
+        apt-get)
+            apt-get update -qq >/dev/null 2>&1
+            apt-get install -y "$@" >/dev/null 2>&1 ;;
+        apk)
+            apk add --no-cache "$@" >/dev/null 2>&1 ;;
+        yum|dnf)
+            $PKG_MGR install -y "$@" >/dev/null 2>&1 ;;
+    esac
+    for tool in "$@"; do
+        if command -v "$tool" >/dev/null 2>&1; then
+            echo -e "${GREEN}✓${NC} $tool 安装成功"
+        else
+            echo -e "${RED}✗${NC} $tool 安装失败"
+        fi
+    done
+}
+
+# 强制使用netcat-openbsd（仅Debian）：传统netcat缺少-z选项，会导致端口检测失败
 manage_dependencies() {
     local mode="$1"
     local missing_tools=()
@@ -163,13 +210,16 @@ manage_dependencies() {
         fi
     done
 
-    if ! check_netcat_openbsd; then
-        missing_tools+=("nc")
-        if [ "$mode" = "install" ]; then
-            echo -e "${YELLOW}✗${NC} nc 需要安装netcat-openbsd版本"
+    # nc 检查仅 Debian
+    if [ "$DISTRO" = "debian" ]; then
+        if ! check_netcat_openbsd; then
+            missing_tools+=("nc")
+            if [ "$mode" = "install" ]; then
+                echo -e "${YELLOW}✗${NC} nc 需要安装netcat-openbsd版本"
+            fi
+        elif [ "$mode" = "install" ]; then
+            echo -e "${GREEN}✓${NC} nc (netcat-openbsd) 已安装"
         fi
-    elif [ "$mode" = "install" ]; then
-        echo -e "${GREEN}✓${NC} nc (netcat-openbsd) 已安装"
     fi
 
     if [ ${#missing_tools[@]} -gt 0 ]; then
@@ -180,22 +230,23 @@ manage_dependencies() {
             exit 1
         elif [ "$mode" = "install" ]; then
             echo -e "${YELLOW}需要安装以下工具: ${missing_tools[*]}${NC}"
-            echo -e "${BLUE}使用 apt-get 安装依赖,下载中...${NC}"
-            apt-get update -qq >/dev/null 2>&1
+            echo -e "${BLUE}使用 $PKG_MGR 安装依赖,下载中...${NC}"
 
+            # nc 特殊处理（仅 Debian）
+            local general_tools=()
             for tool in "${missing_tools[@]}"; do
-                case "$tool" in
-                    "curl") apt-get install -y curl >/dev/null 2>&1 && echo -e "${GREEN}✓${NC} curl 安装成功" ;;
-                    "wget") apt-get install -y wget >/dev/null 2>&1 && echo -e "${GREEN}✓${NC} wget 安装成功" ;;
-                    "tar") apt-get install -y tar >/dev/null 2>&1 && echo -e "${GREEN}✓${NC} tar 安装成功" ;;
-                    "bc") apt-get install -y bc >/dev/null 2>&1 && echo -e "${GREEN}✓${NC} bc 安装成功" ;;
-                    "jq") apt-get install -y jq >/dev/null 2>&1 && echo -e "${GREEN}✓${NC} jq 安装成功" ;;
-                    "nc")
-                        apt-get remove -y netcat-traditional >/dev/null 2>&1
-                        apt-get install -y netcat-openbsd >/dev/null 2>&1 && echo -e "${GREEN}✓${NC} nc (netcat-openbsd) 安装成功"
-                        ;;
-                esac
+                if [ "$tool" = "nc" ] && [ "$DISTRO" = "debian" ]; then
+                    apt-get remove -y netcat-traditional >/dev/null 2>&1
+                    apt-get install -y netcat-openbsd >/dev/null 2>&1 && echo -e "${GREEN}✓${NC} nc (netcat-openbsd) 安装成功"
+                else
+                    general_tools+=("$tool")
+                fi
             done
+
+            # 批量安装通用工具
+            if [ ${#general_tools[@]} -gt 0 ]; then
+                _pkg_install "${general_tools[@]}"
+            fi
         fi
     elif [ "$mode" = "install" ]; then
         echo -e "${GREEN}所有必备工具已安装完成${NC}"
@@ -294,6 +345,11 @@ check_connectivity() {
 
     if [ -z "$target" ] || [ -z "$port" ]; then
         return 1
+    fi
+
+    # nc 不可用时直接跳过（Alpine/CentOS 无 netcat-openbsd）
+    if ! command -v nc >/dev/null 2>&1; then
+        return 0
     fi
 
     # TCP检测

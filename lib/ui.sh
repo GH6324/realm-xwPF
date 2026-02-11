@@ -38,7 +38,7 @@ rules_management_menu() {
         echo -e "${GREEN}=== 转发配置管理 ===${NC}"
         echo ""
 
-        local status=$(systemctl is-active realm 2>/dev/null)
+        local status=$(svc_status_text)
         if [ "$status" = "active" ]; then
             echo -e "服务状态: ${GREEN}●${NC} 运行中"
         else
@@ -306,8 +306,8 @@ uninstall_realm() {
 # 第一阶段：清理 Realm 相关
 uninstall_realm_stage_one() {
     # 停止服务
-    systemctl is-active realm >/dev/null 2>&1 && systemctl stop realm
-    systemctl is-enabled realm >/dev/null 2>&1 && systemctl disable realm >/dev/null 2>&1
+    svc_is_active && svc_stop
+    [ "$(svc_enabled_text)" = "enabled" ] && svc_disable
     # 停止健康检查服务（通过xwFailover.sh）
     if [ -f "/etc/realm/xwFailover.sh" ]; then
         bash "/etc/realm/xwFailover.sh" stop >/dev/null 2>&1
@@ -316,12 +316,13 @@ uninstall_realm_stage_one() {
 
     # 清理文件
     cleanup_files_by_paths "$REALM_PATH" "$CONFIG_DIR" "$SYSTEMD_PATH" "/etc/realm"
+    [ -f "/etc/init.d/realm" ] && rm -f "/etc/init.d/realm"
     cleanup_files_by_pattern "realm" "/var/log /tmp /var/tmp"
 
     # 清理系统配置
     [ -f "/etc/sysctl.d/90-enable-MPTCP.conf" ] && rm -f "/etc/sysctl.d/90-enable-MPTCP.conf"
     command -v ip >/dev/null 2>&1 && ip mptcp endpoint flush 2>/dev/null
-    systemctl daemon-reload
+    svc_daemon_reload
 }
 
 # 第二阶段：清理脚本文件
@@ -447,7 +448,7 @@ show_brief_status() {
     fi
 
     # 正常状态显示
-    local status=$(systemctl is-active realm 2>/dev/null)
+    local status=$(svc_status_text)
     if [ "$status" = "active" ]; then
         echo -e "服务状态: ${GREEN}●${NC} 运行中"
     else
@@ -753,7 +754,7 @@ show_menu() {
                 check_dependencies
                 echo -e "${YELLOW}实时查看 Realm 日志 (按 Ctrl+C 返回菜单):${NC}"
                 echo ""
-                journalctl -u realm -f --no-pager
+                svc_logs
                 ;;
             6)
                 port_traffic_dog_menu
@@ -784,7 +785,7 @@ cleanup_temp_files() {
     # 清理缓存文件（>10MB截断保留5MB）
     local cache_file="/tmp/realm_path_cache"
     if [ -f "$cache_file" ]; then
-        local size=$(stat -c%s "$cache_file" 2>/dev/null || echo 0)
+        local size=$(stat -c%s "$cache_file" 2>/dev/null || stat -f%z "$cache_file" 2>/dev/null || echo 0)
         if [ "$size" -gt 10485760 ]; then
             tail -c 5242880 "$cache_file" > "$cache_file.tmp" && mv "$cache_file.tmp" "$cache_file" 2>/dev/null
         fi
@@ -799,8 +800,9 @@ cleanup_temp_files() {
 
 # ---- 主逻辑 ----
 main() {
-    # 内置清理：启动时清理临时文件
     cleanup_temp_files
+
+    detect_system
 
     # 检查特殊参数
     if [ "$1" = "--generate-config-only" ]; then
