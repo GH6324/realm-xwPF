@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SCRIPT_VERSION="v2.2.0"
+SCRIPT_VERSION="v2.2.1"
 REALM_VERSION="v2.9.3"
 
 NAT_LISTEN_PORT=""
@@ -171,12 +171,6 @@ detect_system() {
     fi
 }
 
-check_netcat_openbsd() {
-    [ "$DISTRO" != "debian" ] && return 0
-    dpkg -l netcat-openbsd >/dev/null 2>&1
-    return $?
-}
-
 # 统一包安装分发
 _pkg_install() {
     case "$PKG_MGR" in
@@ -197,7 +191,6 @@ _pkg_install() {
     done
 }
 
-# 强制使用netcat-openbsd（仅Debian）：传统netcat缺少-z选项，会导致端口检测失败
 manage_dependencies() {
     local mode="$1"
     local missing_tools=()
@@ -210,18 +203,6 @@ manage_dependencies() {
         fi
     done
 
-    # nc 检查仅 Debian
-    if [ "$DISTRO" = "debian" ]; then
-        if ! check_netcat_openbsd; then
-            missing_tools+=("nc")
-            if [ "$mode" = "install" ]; then
-                echo -e "${YELLOW}✗${NC} nc 需要安装netcat-openbsd版本"
-            fi
-        elif [ "$mode" = "install" ]; then
-            echo -e "${GREEN}✓${NC} nc (netcat-openbsd) 已安装"
-        fi
-    fi
-
     if [ ${#missing_tools[@]} -gt 0 ]; then
         if [ "$mode" = "check" ]; then
             echo -e "${RED}错误: 缺少必备工具: ${missing_tools[*]}${NC}"
@@ -231,22 +212,7 @@ manage_dependencies() {
         elif [ "$mode" = "install" ]; then
             echo -e "${YELLOW}需要安装以下工具: ${missing_tools[*]}${NC}"
             echo -e "${BLUE}使用 $PKG_MGR 安装依赖,下载中...${NC}"
-
-            # nc 特殊处理（仅 Debian）
-            local general_tools=()
-            for tool in "${missing_tools[@]}"; do
-                if [ "$tool" = "nc" ] && [ "$DISTRO" = "debian" ]; then
-                    apt-get remove -y netcat-traditional >/dev/null 2>&1
-                    apt-get install -y netcat-openbsd >/dev/null 2>&1 && echo -e "${GREEN}✓${NC} nc (netcat-openbsd) 安装成功"
-                else
-                    general_tools+=("$tool")
-                fi
-            done
-
-            # 批量安装通用工具
-            if [ ${#general_tools[@]} -gt 0 ]; then
-                _pkg_install "${general_tools[@]}"
-            fi
+            _pkg_install "${missing_tools[@]}"
         fi
     elif [ "$mode" = "install" ]; then
         echo -e "${GREEN}所有必备工具已安装完成${NC}"
@@ -282,40 +248,6 @@ get_public_ip() {
     echo ""
 }
 
-# 写入状态文件
-write_manager_conf() {
-    mkdir -p "$CONFIG_DIR"
-
-    cat > "$MANAGER_CONF" <<EOF
-ROLE=$ROLE
-INSTALL_TIME="$(get_gmt8_time '+%Y-%m-%d %H:%M:%S')"
-SECURITY_LEVEL=$SECURITY_LEVEL
-TLS_CERT_PATH=$TLS_CERT_PATH
-TLS_KEY_PATH=$TLS_KEY_PATH
-TLS_SERVER_NAME=$TLS_SERVER_NAME
-WS_PATH=$WS_PATH
-WS_HOST=$WS_HOST
-EOF
-
-    echo -e "${GREEN}✓ 状态文件已保存: $MANAGER_CONF${NC}"
-}
-
-read_manager_conf() {
-    if [ ! -f "$MANAGER_CONF" ]; then
-        echo -e "${RED}错误: 状态文件不存在，请先运行安装${NC}"
-        echo -e "${YELLOW}运行命令: ${GREEN}pf install${NC}"
-        exit 1
-    fi
-
-    source "$MANAGER_CONF"
-
-    if [ -z "$ROLE" ]; then
-        echo -e "${RED}错误: 状态文件损坏，请重新安装${NC}"
-        exit 1
-    fi
-
-}
-
 # 支持realm单端口多规则复用，避免误报端口冲突
 check_port_usage() {
     local port="$1"
@@ -343,23 +275,10 @@ check_connectivity() {
     local port="$2"
     local timeout="${3:-3}"
 
-    if [ -z "$target" ] || [ -z "$port" ]; then
-        return 1
-    fi
+    [ -z "$target" ] || [ -z "$port" ] && return 1
 
-    # nc 不可用时直接跳过（Alpine/CentOS 无 netcat-openbsd）
-    if ! command -v nc >/dev/null 2>&1; then
-        return 0
-    fi
-
-    # TCP检测
-    if nc -z -w"$timeout" "$target" "$port" >/dev/null 2>&1; then
-        return 0
-    fi
-
-    # TCP失败则尝试UDP检测
-    nc -z -u -w"$timeout" "$target" "$port" >/dev/null 2>&1
-    return $?
+    # bash /dev/tcp（全平台通用）
+    timeout "$timeout" bash -c "echo >/dev/tcp/$target/$port" 2>/dev/null
 }
 
 validate_port() {
