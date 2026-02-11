@@ -111,6 +111,3 @@ wget -O port-traffic-dog.sh https://v6.gh-proxy.org/https://raw.githubuserconten
 1. 在企业wx 群中添加群机器人
 2. 获取机器人的 Webhook URL复制
 3. 粘贴到`请输入Webhook URL: ` 即可
-
-### 贡献代码
-欢迎各种形式的贡献：Bug修复、新功能、文档改进等

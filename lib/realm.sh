@@ -993,20 +993,6 @@ smart_install() {
     fi
 }
 
-# 服务管理 - 启动
-service_start() {
-    echo -e "${YELLOW}正在启动 Realm 服务...${NC}"
-
-    if systemctl start realm; then
-        echo -e "${GREEN}✓ Realm 服务启动成功${NC}"
-    else
-        echo -e "${RED}✗ Realm 服务启动失败${NC}"
-        echo -e "${BLUE}查看详细错误信息:${NC}"
-        systemctl status realm --no-pager -l
-        return 1
-    fi
-}
-
 # 服务管理 - 停止
 service_stop() {
     echo -e "${YELLOW}正在停止 Realm 服务...${NC}"

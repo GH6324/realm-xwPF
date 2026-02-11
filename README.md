@@ -1,6 +1,6 @@
 # Realm 全功能一键网络转发管理,纯脚本快速搭建中转服务器
 
-[中文](README.md) | [English](README_EN.md) | [端口流量狗介绍](port-traffic-dog-README.md)
+[中文](README.md) | [English](README_EN.md) | [端口流量狗脚本介绍](port-traffic-dog-README.md)
 
 ---
 
@@ -99,21 +99,46 @@ wget -qO- https://v6.gh-proxy.org/https://raw.githubusercontent.com/zywe03/realm
 
 适用于完全无法连接网络
 
-**下载必要文件**
+**1. 在有网络的设备上下载以下文件**
 
-在有网络的设备上下载以下文件：
-- **脚本文件下载**：[xwPF.sh](https://github.com/zywe03/realm-xwPF/raw/main/xwPF.sh) (右键点击 → 另存为)
-- **Realm 程序下载**（根据系统架构选择）：
+- **主脚本**：[xwPF.sh](https://github.com/zywe03/realm-xwPF/raw/main/xwPF.sh)
+- **模块文件**（全部需要）：https://github.com/zywe03/realm-xwPF/tree/main/lib
+
+- **Realm 程序**（根据系统架构选择）：
 
 | 架构 | 适用系统 | 下载链接 | 检测命令 |
 |------|----------|----------|----------|
-| x86_64 | 常见64位系统 | [realm-x86_64-unknown-linux-gnu.tar.gz](https://github.com/zhboner/realm/releases/download/v2.7.0/realm-x86_64-unknown-linux-gnu.tar.gz) | `uname -m` 显示 `x86_64` |
-| aarch64 | ARM64系统 | [realm-aarch64-unknown-linux-gnu.tar.gz](https://github.com/zhboner/realm/releases/download/v2.7.0/realm-aarch64-unknown-linux-gnu.tar.gz) | `uname -m` 显示 `aarch64` |
-| armv7 | ARM32系统（如树莓派） | [realm-armv7-unknown-linux-gnueabihf.tar.gz](https://github.com/zhboner/realm/releases/download/v2.7.0/realm-armv7-unknown-linux-gnueabihf.tar.gz) | `uname -m` 显示 `armv7l` 或 `armv6l` |
+| x86_64 | 常见64位系统 | [realm-x86_64-unknown-linux-gnu.tar.gz](https://github.com/zhboner/realm/releases/latest) | `uname -m` 显示 `x86_64` |
+| aarch64 | ARM64系统 | [realm-aarch64-unknown-linux-gnu.tar.gz](https://github.com/zhboner/realm/releases/latest) | `uname -m` 显示 `aarch64` |
+| armv7 | ARM32系统（如树莓派） | [realm-armv7-unknown-linux-gnueabihf.tar.gz](https://github.com/zhboner/realm/releases/latest) | `uname -m` 显示 `armv7l` 或 `armv6l` |
 
-随便创建一个目录放置脚本和压缩包文件（压缩包不能放在目录/usr/local/bin/）,bash指令启动脚本选择**1. 安装配置**会提示**离线安装realm输入完整路径(回车默认自动下载):**
+**2. 将文件放置到目标服务器**
+
+```
+/usr/local/bin/            ← 脚本安装目录（固定路径）
+├── xwPF.sh                ← 主脚本
+└── lib/                   ← 创建 lib 子目录
+    ├── core.sh
+    ├── rules.sh
+    ├── server.sh
+    ├── realm.sh
+    └── ui.sh
+
+~/                         ← Realm 压缩包放在任意其他位置
+└── realm-xxx.tar.gz
+```
+
+**3. 执行离线安装**
+
+```bash
+chmod +x /usr/local/bin/xwPF.sh
+bash /usr/local/bin/xwPF.sh
+```
+
+选择 **1. 安装配置** 后会提示 **离线安装realm输入完整路径(回车默认自动下载):**，输入 Realm 压缩包的完整路径即可
 
 </details>
+
 
 ## ✨ 核心特性
 
@@ -281,51 +306,65 @@ IP地址：MPTCP协议需要知道可以使用哪些IP地址建立子流
 | `iproute2` | MPTCP端点管理  | `jq`        | JSON数据处理     |
 | `nftables` | 端口流量统计   | `tc`        | 流量控制限制     |
 
-
 ## 文件结构
 
-全部安装完成后的文件组织结构：
+> 脚本按需索取，其他功能点击对应菜单才会下载
+
+### 使用realm转发核心安装（安装即有）
 
 ```
-📦 系统文件
+系统文件
 ├── /usr/local/bin/
 │   ├── realm                    # Realm 主程序
 │   ├── xwPF.sh                  # 管理脚本入口
 │   ├── lib/                     # 模块目录
-│   │   ├── core.sh              # 核心工具（系统检测/依赖/网络）
-│   │   ├── rules.sh             # 规则管理（CRUD/负载均衡/故障转移）
-│   │   ├── server.sh            # 服务器管理（配置导入导出/TLS/WS）
+│   │   ├── core.sh              # 核心工具（系统检测/依赖/网络/验证）
+│   │   ├── rules.sh             # 规则管理（规则CRUD/负载均衡/权重）
+│   │   ├── server.sh            # 服务器配置（中转/出口交互/MPTCP管理）
 │   │   ├── realm.sh             # Realm 安装/配置生成/服务管理
 │   │   └── ui.sh                # 交互菜单/状态显示/卸载
-│   ├── port-traffic-dog.sh      # 端口流量犬脚本
-│   ├── pf                       # 快捷启动命令
-│   └── dog                      # 端口流量犬快捷命令
+│   └── pf                       # 快捷启动命令
 │
-├── /etc/realm/                  # Realm配置目录
+├── /etc/realm/                  # Realm 配置目录
 │   ├── manager.conf             # 状态管理文件
 │   ├── config.json              # Realm 工作配置文件
-│   ├── rules/                   # 转发规则目录
-│   │   ├── rule-1.conf          # 规则1配置
-│   │   ├── rule-2.conf          # 规则2配置
-│   │   └── ...
-│   └── health/                  # 健康检查目录（故障转移）
-│       └── health_status.conf   # 健康状态文件
+│   └── rules/                   # 转发规则目录
+│       ├── rule-1.conf          # 规则1配置
+│       └── ...
 │
-├── /etc/port-traffic-dog/       # 端口流量犬配置目录
-│   ├── config.json              # 流量监控配置文件
-│   ├── traffic_data.json        # 流量备份数据（重启恢复用）
-│   ├── notifications/           # 通知模块目录
-│   │   └── telegram.sh          # Telegram通知模块
-│   └── logs/                    # 日志目录
-│       └── notification.log     # 通知日志
-│
-├── /etc/systemd/system/
-│   ├── realm.service            # 主服务文件
-│   ├── realm-health-check.service  # 健康检查服务
-│   └── realm-health-check.timer    # 健康检查定时器
-│
-├── /etc/sysctl.d/
-│   └── 90-enable-MPTCP.conf     # MPTCP系统配置文件
+└── /etc/systemd/system/
+    └── realm.service            # Realm 主服务文件
+```
+
+### 按需下载（点击对应功能时才会下载）
+
+```
+故障转移（开启故障转移时下载）
+├── /usr/local/bin/xwFailover.sh         # 故障转移管理脚本
+├── /etc/realm/health/
+│   └── health_status.conf               # 健康状态文件
+└── /etc/systemd/system/
+    ├── realm-health-check.service       # 健康检查服务
+    └── realm-health-check.timer         # 健康检查定时器
+
+端口流量犬（选择端口流量犬时下载）
+├── /usr/local/bin/port-traffic-dog.sh   # 端口流量犬脚本
+├── /usr/local/bin/dog                   # 快捷启动命令
+└── /etc/port-traffic-dog/
+    ├── config.json                      # 流量监控配置文件
+    ├── traffic_data.json                # 流量数据备份
+    ├── notifications/                   # 通知模块目录
+    │   └── telegram.sh                  # Telegram通知模块
+    └── logs/                            # 日志目录
+
+中转网络链路测试（选择链路测试时下载）
+└── /usr/local/bin/speedtest.sh          # 网络链路测试脚本
+
+配置识别导入（选择识别导入时下载）
+└── /etc/realm/xw_realm_OCR.sh           # Realm配置识别脚本
+
+MPTCP（启用MPTCP时创建）
+└── /etc/sysctl.d/90-enable-MPTCP.conf   # MPTCP系统配置
 ```
 
 ## 🤝 技术支持
