@@ -142,21 +142,6 @@ Select **1. Install & Configure**, and you will be prompted: **Enter full path f
 
 ## ✨ Core Features
 
-- **Quick Start** — One-click install, lightweight, get up and running with network forwarding fast
-- **Failover** — Automatic failure detection using native system tools, keeping things lightweight
-- **Load Balancing** — Round-robin, IP hash, and configurable weight distribution
-- **Tunnel Building** — Dual-Realm architecture with TLS, WS, WSS tunnel support
-- **Rule Annotations** — Clear labeling for every rule — no more memorizing port mappings
-- **Port Traffic Dog** — Per-port traffic stats, rate limiting, throttling, with configurable notifications
-- **Intuitive MPTCP Configuration** — Clean, visual MPTCP interface
-- **Network Link Testing** — Measure latency, bandwidth, stability, and large-packet routing (powered by hping3, iperf3, nexttrace, bgp.tools)
-
-- **One-Click Export** — Bundle everything into a tarball for seamless migration (annotations and all)
-- **One-Click Import** — Recognize and restore from an exported bundle
-- **Batch Import** — Parse and import custom Realm rule configs for easy rule-set management
-- **Smart Detection** — Auto-detects system architecture, port conflicts, and connection availability
-
-- **Clean Uninstall** — Phased, thorough cleanup — *"I leave as quietly as I came"*
 - **Full Native Realm Feature Set** — Tracks every feature in the latest Realm release
   - TCP / UDP
   - WS / WSS / TLS encryption, decryption, and forwarding
@@ -167,6 +152,23 @@ Select **1. Install & Configure**, and you will be prompted: **Enter full path f
   - Bind specific entry or exit IP on the relay (for multi-IP, one-to-many, many-to-one)
   - Bind specific entry or exit NIC on the relay (for multi-NIC setups)
   - More at [zhboner/realm](https://github.com/zhboner/realm)
+- **Multi-Distro Support** — Works on Debian/Ubuntu, Alpine, CentOS/RHEL and derivatives, auto-detects package manager and init system (systemd / OpenRC)
+- **Quick Start** — One-click install, lightweight, get up and running with network forwarding fast
+- **Smart Detection** — Auto-detects system architecture, port conflicts, and connection availability
+
+- **Tunnel Building** — Dual-Realm architecture with TLS, WS, WSS tunnel support
+- **Load Balancing** — Round-robin, IP hash, and configurable weight distribution
+- **Failover** — Automatic failure detection using native system tools, keeping things lightweight
+- **Rule Annotations** — Clear labeling for every rule — no more memorizing port mappings
+
+- **Port Traffic Dog** — Per-port traffic stats, rate limiting, throttling, with configurable notifications
+- **Intuitive MPTCP Configuration** — Clean, visual MPTCP interface
+- **Network Link Testing** — Measure latency, bandwidth, stability, and large-packet routing (powered by hping3, iperf3, nexttrace, bgp.tools)
+
+- **One-Click Export** — Bundle everything into a tarball for seamless migration (annotations and all)
+- **One-Click Import** — Recognize and restore from an exported bundle
+- **Batch Import** — Parse and import custom Realm rule configs for easy rule-set management
+- **Clean Uninstall** — Phased, thorough cleanup — *"I leave as quietly as I came"*
 
 ## Architecture Diagrams — How It Works in Different Scenarios (Recommended Reading)
 
@@ -279,11 +281,11 @@ Port forwarding simply relays traffic from one port to another.
 
 A chained (segmented) proxy splits the connection into two separate proxy hops — also called a two-tier proxy. (Detailed setup may be covered in a future guide.)
 
-**Each approach has its strengths** — it depends on the use case | Note: some hosts prohibit installing proxy software | That said, chained proxies can be very flexible in certain scenarios
+**Each approach has its strengths** — it depends on the use case | Note: some regional servers prohibit installing proxy software | That said, chained proxies can be very flexible in certain scenarios
 
 | Chained Proxy | Port Forwarding |
 | :--- | :--- |
-| Every hop in the chain needs proxy software | Relay runs a forwarder, exit runs the proxy |
+| Every hop in the chain needs proxy software | Relay runs a forwarder (no proxy needed), exit runs the proxy |
 | Higher configuration complexity | Lower complexity (L4 forwarding) |
 | Unpack / repack overhead at each hop | Native TCP/UDP passthrough — theoretically faster |
 | Finer outbound control (per-hop exit config) | Limited outbound control |
@@ -298,9 +300,10 @@ All dependencies are **native Linux lightweight tools** — keeping the system c
 | `curl` | Downloads & IP lookup | `wget` | Fallback downloader |
 | `tar` | Archive extraction | `unzip` | ZIP extraction |
 | `bc` | Arithmetic | `nc` | TCP connectivity probe |
-| `grep`/`cut` | Text processing | `inotify` | File-change markers |
-| `iproute2` | MPTCP endpoint mgmt | `jq` | JSON processing |
-| `nftables` | Per-port traffic stats | `tc` | Traffic shaping |
+| `bash /dev/tcp` | TCP connectivity probe (built-in) | `inotify` | File-change markers |
+| `grep`/`cut` | Text processing | `jq` | JSON processing |
+| `iproute2` | MPTCP endpoint mgmt | `nftables` | Per-port traffic stats |
+| `tc` | Traffic shaping | | |
 
 ## File Structure
 
