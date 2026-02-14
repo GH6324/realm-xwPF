@@ -871,10 +871,10 @@ smart_install() {
     # 安装依赖
     manage_dependencies "install"
 
-    # 安装/更新脚本文件（调用 xwPF.sh 定义的 _bootstrap）
-    if ! _bootstrap; then
-        echo -e "${RED}脚本安装失败${NC}"
-        exit 1
+    # 脚本更新（首次安装跳过，菜单进入则询问）
+    if [ "${_SKIP_SCRIPT_UPDATE:-}" != "1" ]; then
+        read -p "是否更新脚本？(y/N): " update_script
+        [[ "$update_script" =~ ^[Yy]$ ]] && _bootstrap
     fi
 
     # 下载最新的 realm 主程序

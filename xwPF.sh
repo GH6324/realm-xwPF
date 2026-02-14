@@ -88,7 +88,7 @@ case "${1:-}" in
         [ "$(id -u)" -ne 0 ] && { echo -e "${_RED}错误: 需要 root 权限${_NC}"; exit 1; }
         _bootstrap || exit 1
         _load_libs || exit 1
-        smart_install
+        _SKIP_SCRIPT_UPDATE=1 smart_install
         ;;
     *)
         _load_libs || exit 1

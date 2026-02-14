@@ -132,10 +132,13 @@ wget -qO- https://v6.gh-proxy.org/https://raw.githubusercontent.com/zywe03/realm
 
 ```bash
 chmod +x /usr/local/bin/xwPF.sh
+ln -sf /usr/local/bin/xwPF.sh /usr/local/bin/pf
 bash /usr/local/bin/xwPF.sh
 ```
 
-选择 **1. 安装配置** 后会提示 **离线安装realm输入完整路径(回车默认自动下载):**，输入 Realm 压缩包的完整路径即可
+选择 **1. 安装配置** 后：
+1. 提示 **是否更新脚本？(y/N):** → 直接回车跳过（离线无法更新）
+2. 提示 **离线安装realm输入完整路径(回车默认自动下载):** → 输入 Realm 压缩包的完整路径即可
 
 </details>
 

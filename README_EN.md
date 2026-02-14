@@ -132,10 +132,13 @@ For servers with absolutely no network connectivity.
 
 ```bash
 chmod +x /usr/local/bin/xwPF.sh
+ln -sf /usr/local/bin/xwPF.sh /usr/local/bin/pf
 bash /usr/local/bin/xwPF.sh
 ```
 
-Select **1. Install & Configure**, and you will be prompted: **Enter full path for offline Realm installation (press Enter to download automatically):**. Provide the full path to the Realm tarball.
+Select **1. Install & Configure**, then:
+1. When prompted **Update script? (y/N):** → Press Enter to skip (cannot update offline)
+2. When prompted **Enter full path for offline Realm installation (press Enter to download automatically):** → Provide the full path to the Realm tarball
 
 </details>
 
