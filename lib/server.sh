@@ -1363,28 +1363,16 @@ done
                 ;;
             4)
                 SECURITY_LEVEL="tls_ca"
+                TLS_CERT_PATH=""
+                TLS_KEY_PATH=""
                 echo -e "${GREEN}已选择: TLS CA证书${NC}"
 
                 echo ""
-                while true; do
-                    read -p "请输入证书文件路径: " TLS_CERT_PATH
-                    if [ -f "$TLS_CERT_PATH" ]; then
-                        break
-                    else
-                        echo -e "${RED}证书文件不存在，请检查路径${NC}"
-                    fi
-                done
-
-                while true; do
-                    read -p "请输入私钥文件路径: " TLS_KEY_PATH
-                    if [ -f "$TLS_KEY_PATH" ]; then
-                        break
-                    else
-                        echo -e "${RED}私钥文件不存在，请检查路径${NC}"
-                    fi
-                done
-
-                read -p "请输入TLS服务器名称 (SNI): " TLS_SERVER_NAME
+                read -p "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
+                if [ -z "$TLS_SERVER_NAME" ]; then
+                    TLS_SERVER_NAME="$DEFAULT_SNI_DOMAIN"
+                fi
+                echo -e "${GREEN}TLS服务器名称设置为: $TLS_SERVER_NAME${NC}"
                 echo -e "${GREEN}TLS配置完成${NC}"
                 break
                 ;;
@@ -1415,6 +1403,8 @@ done
                 ;;
             6)
                 SECURITY_LEVEL="ws_tls_ca"
+                TLS_CERT_PATH=""
+                TLS_KEY_PATH=""
                 echo -e "${GREEN}已选择: TLS+WebSocket CA证书${NC}"
 
                 echo ""
@@ -1425,25 +1415,11 @@ done
                 echo -e "${GREEN}WebSocket Host设置为: $WS_HOST${NC}"
 
                 echo ""
-                while true; do
-                    read -p "请输入证书文件路径: " TLS_CERT_PATH
-                    if [ -f "$TLS_CERT_PATH" ]; then
-                        break
-                    else
-                        echo -e "${RED}证书文件不存在，请检查路径${NC}"
-                    fi
-                done
-
-                while true; do
-                    read -p "请输入私钥文件路径: " TLS_KEY_PATH
-                    if [ -f "$TLS_KEY_PATH" ]; then
-                        break
-                    else
-                        echo -e "${RED}私钥文件不存在，请检查路径${NC}"
-                    fi
-                done
-
-                read -p "请输入TLS服务器名称 (SNI): " TLS_SERVER_NAME
+                read -p "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
+                if [ -z "$TLS_SERVER_NAME" ]; then
+                    TLS_SERVER_NAME="$DEFAULT_SNI_DOMAIN"
+                fi
+                echo -e "${GREEN}TLS服务器名称设置为: $TLS_SERVER_NAME${NC}"
 
                 read -p "请输入WebSocket路径 [默认: /ws]: " WS_PATH
                 if [ -z "$WS_PATH" ]; then
