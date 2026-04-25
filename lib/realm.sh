@@ -346,7 +346,7 @@ generate_endpoints_from_rules() {
                         # 中转服务器使用动态输入的IP
                         default_listen_ip="${NAT_LISTEN_IP:-::}"
                     fi
-                    port_configs[$port_key]="$SECURITY_LEVEL|$TLS_SERVER_NAME|$TLS_CERT_PATH|$TLS_KEY_PATH|$BALANCE_MODE|${LISTEN_IP:-$default_listen_ip}|$THROUGH_IP"
+                    port_configs[$port_key]="$SECURITY_LEVEL|$TLS_SERVER_NAME|$TLS_CERT_PATH|$TLS_KEY_PATH|$BALANCE_MODE|${LISTEN_IP:-$default_listen_ip}|$THROUGH_IP|$WS_PATH|$WS_HOST"
                     # 存储权重配置和角色信息
                     port_weights[$port_key]="$WEIGHTS"
                     port_roles[$port_key]="$RULE_ROLE"
@@ -496,7 +496,7 @@ generate_endpoints_from_rules() {
         fi
 
         # 解析端口配置
-        IFS='|' read -r security_level tls_server_name tls_cert_path tls_key_path balance_mode listen_ip through_ip <<< "${port_configs[$port_key]}"
+        IFS='|' read -r security_level tls_server_name tls_cert_path tls_key_path balance_mode listen_ip through_ip ws_path ws_host <<< "${port_configs[$port_key]}"
         # 如果没有listen_ip字段（向后兼容），根据角色使用对应的默认值
         if [ -z "$listen_ip" ]; then
             local role="${port_roles[$port_key]:-1}"
@@ -587,7 +587,7 @@ generate_endpoints_from_rules() {
         fi
 
         # 添加传输配置 - 使用存储的规则角色信息
-        local transport_config=$(get_transport_config "$security_level" "$tls_server_name" "$tls_cert_path" "$tls_key_path" "$role" "$WS_PATH")
+        local transport_config=$(get_transport_config "$security_level" "$tls_server_name" "$tls_cert_path" "$tls_key_path" "$role" "$ws_path" "$ws_host")
         if [ -n "$transport_config" ]; then
             endpoint_config="$endpoint_config,
             $transport_config"

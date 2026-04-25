@@ -89,8 +89,6 @@ THROUGH_IP="$NAT_THROUGH_IP"
 REMOTE_HOST="$REMOTE_IP"
 REMOTE_PORT="$remote_port"
 TLS_SERVER_NAME="$TLS_SERVER_NAME"
-TLS_CERT_PATH="$TLS_CERT_PATH"
-TLS_KEY_PATH="$TLS_KEY_PATH"
 WS_PATH="$WS_PATH"
 WS_HOST="$WS_HOST"
 RULE_NOTE="$RULE_NOTE"
@@ -131,8 +129,6 @@ SECURITY_LEVEL="$SECURITY_LEVEL"
 LISTEN_PORT="$listen_port"
 FORWARD_TARGET="$forward_target"
 TLS_SERVER_NAME="$TLS_SERVER_NAME"
-TLS_CERT_PATH="$TLS_CERT_PATH"
-TLS_KEY_PATH="$TLS_KEY_PATH"
 WS_PATH="$WS_PATH"
 WS_HOST="$WS_HOST"
 RULE_NOTE="$RULE_NOTE"
@@ -152,6 +148,13 @@ CONNECTION_TIMEOUT="3"
 MPTCP_MODE="off"
 PROXY_MODE="off"
 EOF
+
+    if [ "$SECURITY_LEVEL" = "tls_ca" ] || [ "$SECURITY_LEVEL" = "ws_tls_ca" ]; then
+        cat >> "$rule_file" <<EOF
+TLS_CERT_PATH="$TLS_CERT_PATH"
+TLS_KEY_PATH="$TLS_KEY_PATH"
+EOF
+    fi
 
     echo -e "${GREEN}✓ 服务端配置已创建 (ID: $rule_id) 端口: $listen_port->$forward_target${NC}"
 }
@@ -1174,8 +1177,6 @@ done
                     NAT_THROUGH_IP="${THROUGH_IP:-::}"
                     SECURITY_LEVEL="${SECURITY_LEVEL}"
                     TLS_SERVER_NAME="${TLS_SERVER_NAME}"
-                    TLS_CERT_PATH="${TLS_CERT_PATH}"
-                    TLS_KEY_PATH="${TLS_KEY_PATH}"
                     WS_PATH="${WS_PATH}"
                     WS_HOST="${WS_HOST}"
                     RULE_NOTE="${RULE_NOTE:-}"  # 复用现有备注
@@ -1363,8 +1364,6 @@ done
                 ;;
             4)
                 SECURITY_LEVEL="tls_ca"
-                TLS_CERT_PATH=""
-                TLS_KEY_PATH=""
                 echo -e "${GREEN}已选择: TLS CA证书${NC}"
 
                 echo ""
@@ -1403,8 +1402,6 @@ done
                 ;;
             6)
                 SECURITY_LEVEL="ws_tls_ca"
-                TLS_CERT_PATH=""
-                TLS_KEY_PATH=""
                 echo -e "${GREEN}已选择: TLS+WebSocket CA证书${NC}"
 
                 echo ""
@@ -1648,19 +1645,7 @@ configure_exit_server() {
                 echo -e "${GREEN}已选择: TLS自签证书${NC}"
 
                 echo ""
-                read -p "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
-                if [ -z "$TLS_SERVER_NAME" ]; then
-                    TLS_SERVER_NAME="$DEFAULT_SNI_DOMAIN"
-                fi
-                echo -e "${GREEN}TLS服务器名称设置为: $TLS_SERVER_NAME${NC}"
-                break
-                ;;
-            3)
-                SECURITY_LEVEL="tls_self"
-                echo -e "${GREEN}已选择: TLS自签证书${NC}"
-
-                echo ""
-                read -p "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
+                read -p "请输入TLS服务器名称 (servername/CN) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
                 if [ -z "$TLS_SERVER_NAME" ]; then
                     TLS_SERVER_NAME="$DEFAULT_SNI_DOMAIN"
                 fi
@@ -1690,7 +1675,6 @@ configure_exit_server() {
                     fi
                 done
 
-                read -p "请输入TLS服务器名称 (SNI): " TLS_SERVER_NAME
                 echo -e "${GREEN}TLS配置完成${NC}"
                 break
                 ;;
@@ -1706,7 +1690,7 @@ configure_exit_server() {
                 echo -e "${GREEN}WebSocket Host设置为: $WS_HOST${NC}"
 
                 echo ""
-                read -p "请输入TLS服务器名称 (SNI) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
+                read -p "请输入TLS服务器名称 (servername/CN) [默认$DEFAULT_SNI_DOMAIN]: " TLS_SERVER_NAME
                 if [ -z "$TLS_SERVER_NAME" ]; then
                     TLS_SERVER_NAME="$DEFAULT_SNI_DOMAIN"
                 fi
@@ -1748,8 +1732,6 @@ configure_exit_server() {
                         echo -e "${RED}私钥文件不存在，请检查路径${NC}"
                     fi
                 done
-
-                read -p "请输入TLS服务器名称 (SNI): " TLS_SERVER_NAME
 
                 read -p "请输入WebSocket路径 [默认: /ws]: " WS_PATH
                 if [ -z "$WS_PATH" ]; then

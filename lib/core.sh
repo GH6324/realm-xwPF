@@ -352,11 +352,12 @@ validate_single_address() {
 # 根据角色和安全级别生成对应的传输配置，确保客户端和服务端配置匹配 1=中转服务器(客户端), 2=出口服务器(服务端)
 get_transport_config() {
     local security_level="$1"
-    local server_name="$2"
+    local tls_server_name="$2"
     local cert_path="$3"
     local key_path="$4"
     local role="$5"
     local ws_path="$6"
+    local ws_host="$7"
 
     case "$security_level" in
         "standard")
@@ -364,7 +365,7 @@ get_transport_config() {
             ;;
         "ws")
             local ws_path_param="${ws_path:-/ws}"
-            local ws_host_param="${server_name:-$DEFAULT_SNI_DOMAIN}"
+            local ws_host_param="${ws_host:-$DEFAULT_SNI_DOMAIN}"
             if [ "$role" = "1" ]; then
                 echo '"remote_transport": "ws;host='$ws_host_param';path='$ws_path_param'"'
             elif [ "$role" = "2" ]; then
@@ -372,7 +373,7 @@ get_transport_config() {
             fi
             ;;
         "tls_self")
-            local sni_name="${server_name:-$DEFAULT_SNI_DOMAIN}"
+            local sni_name="${tls_server_name:-$DEFAULT_SNI_DOMAIN}"
             if [ "$role" = "1" ]; then
                 echo '"remote_transport": "tls;sni='$sni_name';insecure"'
             elif [ "$role" = "2" ]; then
@@ -381,7 +382,7 @@ get_transport_config() {
             ;;
         "tls_ca")
             if [ "$role" = "1" ]; then
-                local sni_name="${server_name:-$DEFAULT_SNI_DOMAIN}"
+                local sni_name="${tls_server_name:-$DEFAULT_SNI_DOMAIN}"
                 echo '"remote_transport": "tls;sni='$sni_name'"'
             elif [ "$role" = "2" ]; then
                 if [ -n "$cert_path" ] && [ -n "$key_path" ]; then
@@ -392,9 +393,9 @@ get_transport_config() {
             fi
             ;;
         "ws_tls_self")
-            local ws_host_param="${server_name:-$DEFAULT_SNI_DOMAIN}"
+            local ws_host_param="${ws_host:-$DEFAULT_SNI_DOMAIN}"
             local ws_path_param="${ws_path:-/ws}"
-            local sni_name="${TLS_SERVER_NAME:-$DEFAULT_SNI_DOMAIN}"
+            local sni_name="${tls_server_name:-$DEFAULT_SNI_DOMAIN}"
             if [ "$role" = "1" ]; then
                 echo '"remote_transport": "ws;host='$ws_host_param';path='$ws_path_param';tls;sni='$sni_name';insecure"'
             elif [ "$role" = "2" ]; then
@@ -402,10 +403,10 @@ get_transport_config() {
             fi
             ;;
         "ws_tls_ca")
-            local ws_host_param="${server_name:-$DEFAULT_SNI_DOMAIN}"
+            local ws_host_param="${ws_host:-$DEFAULT_SNI_DOMAIN}"
             local ws_path_param="${ws_path:-/ws}"
-            local sni_name="${TLS_SERVER_NAME:-$DEFAULT_SNI_DOMAIN}"
             if [ "$role" = "1" ]; then
+                local sni_name="${tls_server_name:-$DEFAULT_SNI_DOMAIN}"
                 echo '"remote_transport": "ws;host='$ws_host_param';path='$ws_path_param';tls;sni='$sni_name'"'
             elif [ "$role" = "2" ]; then
                 if [ -n "$cert_path" ] && [ -n "$key_path" ]; then
