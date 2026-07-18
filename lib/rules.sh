@@ -180,6 +180,13 @@ generate_rule_id() {
     echo $((max_id + 1))
 }
 
+# 按规则 ID 数字顺序返回规则文件列表（1,2,...,9,10,11），
+# 避免 "rule-*.conf" 通配符按字典序读取造成 1,10,11,2 的错乱。
+# sort -V 是"自然/版本排序"：会把文件名里的数字当数字比大小。
+get_sorted_rule_files() {
+    ls "${RULES_DIR}"/rule-*.conf 2>/dev/null | sort -V
+}
+
 read_rule_file() {
     local rule_file="$1"
     if [ -f "$rule_file" ]; then
@@ -259,7 +266,7 @@ list_rules_with_info() {
     local relay_count=0
 
     if [ "$display_mode" = "management" ]; then
-        for rule_file in "${RULES_DIR}"/rule-*.conf; do
+        for rule_file in $(get_sorted_rule_files); do
             if [ -f "$rule_file" ]; then
                 if read_and_check_relay_rule "$rule_file"; then
                     if [ "$has_relay_rules" = false ]; then
@@ -277,7 +284,7 @@ list_rules_with_info() {
     local exit_count=0
     local has_rules=false
 
-    for rule_file in "${RULES_DIR}"/rule-*.conf; do
+    for rule_file in $(get_sorted_rule_files); do
         if [ -f "$rule_file" ]; then
             if read_rule_file "$rule_file"; then
                 has_rules=true
@@ -403,7 +410,7 @@ list_all_rules() {
     fi
 
     local count=0
-    for rule_file in "${RULES_DIR}"/rule-*.conf; do
+    for rule_file in $(get_sorted_rule_files); do
         if [ -f "$rule_file" ]; then
             if read_rule_file "$rule_file"; then
                 count=$((count + 1))
