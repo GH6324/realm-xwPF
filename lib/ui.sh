@@ -68,7 +68,7 @@ rules_management_menu() {
             if [ "$enabled_count" -gt 0 ]; then
                 local has_relay_rules=false
                 local relay_count=0
-                for rule_file in "${RULES_DIR}"/rule-*.conf; do
+                for rule_file in $(get_sorted_rule_files); do
                     if [ -f "$rule_file" ]; then
                         if read_rule_file "$rule_file" && [ "$ENABLED" = "true" ] && [ "$RULE_ROLE" = "1" ]; then
                             if [ "$has_relay_rules" = false ]; then
@@ -94,7 +94,7 @@ rules_management_menu() {
 
                 local has_exit_rules=false
                 local exit_count=0
-                for rule_file in "${RULES_DIR}"/rule-*.conf; do
+                for rule_file in $(get_sorted_rule_files); do
                     if [ -f "$rule_file" ]; then
                         if read_rule_file "$rule_file" && [ "$ENABLED" = "true" ] && [ "$RULE_ROLE" = "2" ]; then
                             if [ "$has_exit_rules" = false ]; then
@@ -126,7 +126,7 @@ rules_management_menu() {
 
             if [ "$disabled_count" -gt 0 ]; then
                 echo -e "${YELLOW}禁用的规则:${NC}"
-                for rule_file in "${RULES_DIR}"/rule-*.conf; do
+                for rule_file in $(get_sorted_rule_files); do
                     if [ -f "$rule_file" ]; then
                         if read_rule_file "$rule_file" && [ "$ENABLED" = "false" ]; then
                             if [ "$RULE_ROLE" = "2" ]; then
@@ -484,7 +484,7 @@ show_brief_status() {
             # 中转服务器规则
             local has_relay_rules=false
             local relay_count=0
-            for rule_file in "${RULES_DIR}"/rule-*.conf; do
+            for rule_file in $(get_sorted_rule_files); do
                 if [ -f "$rule_file" ]; then
                     if read_rule_file "$rule_file" && [ "$ENABLED" = "true" ] && [ "$RULE_ROLE" = "1" ]; then
                         if [ "$has_relay_rules" = false ]; then
@@ -513,7 +513,7 @@ show_brief_status() {
             # 服务端服务器规则
             local has_exit_rules=false
             local exit_count=0
-            for rule_file in "${RULES_DIR}"/rule-*.conf; do
+            for rule_file in $(get_sorted_rule_files); do
                 if [ -f "$rule_file" ]; then
                     if read_rule_file "$rule_file" && [ "$ENABLED" = "true" ] && [ "$RULE_ROLE" = "2" ]; then
                         if [ "$has_exit_rules" = false ]; then
@@ -548,7 +548,7 @@ show_brief_status() {
         # 显示禁用的规则（简要）
         if [ "$disabled_count" -gt 0 ]; then
             echo -e "${YELLOW}禁用的规则:${NC}"
-            for rule_file in "${RULES_DIR}"/rule-*.conf; do
+            for rule_file in $(get_sorted_rule_files); do
                 if [ -f "$rule_file" ]; then
                     if read_rule_file "$rule_file" && [ "$ENABLED" = "false" ]; then
                         # 根据规则角色使用不同的字段
