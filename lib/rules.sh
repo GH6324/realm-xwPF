@@ -180,11 +180,9 @@ generate_rule_id() {
     echo $((max_id + 1))
 }
 
-# 按规则 ID 数字顺序返回规则文件列表（1,2,...,9,10,11），
-# 避免 "rule-*.conf" 通配符按字典序读取造成 1,10,11,2 的错乱。
-# sort -V 是"自然/版本排序"：会把文件名里的数字当数字比大小。
+# 按 rule-N.conf 中 N 的数字序返回文件列表，避免 glob 字典序 (1,10,2)
 get_sorted_rule_files() {
-    ls "${RULES_DIR}"/rule-*.conf 2>/dev/null | sort -V
+    ls "${RULES_DIR}"/rule-*.conf 2>/dev/null | sort -t- -k2 -n
 }
 
 read_rule_file() {
