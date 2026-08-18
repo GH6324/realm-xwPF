@@ -380,4 +380,4 @@ MPTCP (created when MPTCP is enabled)
 
 **⭐ If this project is useful to you, a Star would be much appreciated!**
 
-[![Star History Chart](https://api.star-history.com/svg?repos=zywe03/realm-xwPF&type=Date)](https://www.star-history.com/#zywe03/realm-xwPF&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=zywe03/realm-xwPF&type=Date)](https://star-history.dera.page/#zywe03/realm-xwPF&Date)
