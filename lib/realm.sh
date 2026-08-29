@@ -184,6 +184,8 @@ install_realm() {
         # 检查程序完整性（基本可执行性测试）
         if ! ${REALM_PATH} --help >/dev/null 2>&1; then
             echo -e "${YELLOW}检测到 realm 文件存在但可能已损坏，将重新安装...${NC}"
+            # 损坏重装同样需要版本号，否则下载 URL 缺版本段而 404
+            LATEST_VERSION=$(get_latest_realm_version)
         else
             # 尝试获取版本信息
             local current_version=""
@@ -228,21 +230,19 @@ install_realm() {
         fi
         
         ARCH=$(uname -m)
-        # 检测 libc 类型（Alpine 使用 musl）
-        local libc_suffix="gnu"
-        if [ -f /etc/alpine-release ]; then
-            libc_suffix="musl"
-        fi
-
+        # 使用 musl 静态二进制：避免构建环境 glibc 不兼容
         case $ARCH in
             x86_64)
-                ARCH="x86_64-unknown-linux-${libc_suffix}"
+                ARCH="x86_64-unknown-linux-musl"
                 ;;
             aarch64)
-                ARCH="aarch64-unknown-linux-${libc_suffix}"
+                ARCH="aarch64-unknown-linux-musl"
                 ;;
-            armv7l|armv6l|arm)
-                ARCH="armv7-unknown-linux-gnueabihf"
+            armv7l|arm)
+                ARCH="armv7-unknown-linux-musleabihf"
+                ;;
+            armv6l)
+                ARCH="arm-unknown-linux-musleabihf"
                 ;;
             *)
                 echo -e "${RED}不支持的CPU架构: ${ARCH}${NC}"
@@ -871,10 +871,28 @@ smart_install() {
     # 安装依赖
     manage_dependencies "install"
 
-    # 脚本更新（首次安装跳过，菜单进入则询问）
+    # 脚本更新（首次安装跳过，菜单进入则检查版本）
     if [ "${_SKIP_SCRIPT_UPDATE:-}" != "1" ]; then
-        read -p "是否更新脚本？(y/N): " update_script
-        [[ "$update_script" =~ ^[Yy]$ ]] && _bootstrap
+        echo -e "${YELLOW}正在检查脚本更新...${NC}"
+        local remote_ver=$(curl -sL --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT \
+            "https://raw.githubusercontent.com/zywe03/realm-xwPF/main/lib/core.sh" 2>/dev/null | \
+            grep -E '^SCRIPT_VERSION=' | head -1 | cut -d'"' -f2)
+
+        if [ -n "$remote_ver" ] && [ "$remote_ver" != "$SCRIPT_VERSION" ]; then
+            echo -e "${YELLOW}发现脚本新版本: ${SCRIPT_VERSION} → ${remote_ver}${NC}"
+            read -p "是否更新脚本？(y/n) [默认: y]: " update_script
+            update_script="${update_script:-y}"
+            if [[ "$update_script" =~ ^[Yy]$ ]]; then
+                if _bootstrap; then
+                    # 重新加载模块使新逻辑立即生效，避免继续走旧内存函数
+                    _load_libs
+                    echo -e "${GREEN}✓ 脚本已更新并重新加载${NC}"
+                fi
+            fi
+        else
+            echo -e "${GREEN}✓ 脚本已是最新版本 ($SCRIPT_VERSION)${NC}"
+        fi
+        echo ""
     fi
 
     # 下载最新的 realm 主程序
