@@ -8,6 +8,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 WHITE='\033[1;37m'
 NC='\033[0m'
+SCRIPT_VERSION="1.0.0"
 SHORT_CONNECT_TIMEOUT=5
 SHORT_MAX_TIMEOUT=7
 LONG_CONNECT_TIMEOUT=15
@@ -1501,24 +1502,46 @@ show_main_menu() {
     done
 }
 
-# 更新脚本
+# 更新脚本：与主脚本相同的模式——比对远端版本，有新版才询问下载
 manual_update_script() {
-    echo -e "${YELLOW}正在更新脚本...${NC}"
+    echo -e "${YELLOW}正在检查脚本更新...${NC}"
 
     local script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/speedtest.sh"
-    local temp_file=$(mktemp)
+    local remote_ver=$(curl -sL --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT         "$script_url" 2>/dev/null |         grep -E '^SCRIPT_VERSION=' | head -1 | cut -d'"' -f2)
 
+    if [ -z "$remote_ver" ]; then
+        echo -e "${RED}✗ 无法获取远端版本，请检查网络连接${NC}"
+        read -p "按回车键返回..."
+        return
+    fi
+
+    if [ "$remote_ver" = "$SCRIPT_VERSION" ]; then
+        echo -e "${GREEN}✓ 脚本已是最新版本 ($SCRIPT_VERSION)${NC}"
+        read -p "按回车键返回..."
+        return
+    fi
+
+    echo -e "${YELLOW}发现脚本新版本: ${SCRIPT_VERSION} → ${remote_ver}${NC}"
+    read -p "是否更新脚本？(y/n) [默认: y]: " update_choice
+    update_choice="${update_choice:-y}"
+    if ! [[ "$update_choice" =~ ^[Yy]$ ]]; then
+        echo -e "${BLUE}使用现有版本${NC}"
+        read -p "按回车键返回..."
+        return
+    fi
+
+    local temp_file=$(mktemp)
     if download_from_sources "$script_url" "$temp_file"; then
         mv "$temp_file" "$0"
         chmod +x "$0"
-        echo -e "${GREEN}✅ 更新完成，重新启动脚本${NC}"
+        echo -e "${GREEN}✓ 脚本已更新到 ${remote_ver}，正在重启...${NC}"
+        sleep 1
         exec "$0"
     else
         rm -f "$temp_file"
         echo -e "${RED}✗ 更新失败${NC}"
+        read -p "按回车键返回..."
     fi
-
-    read -p "按回车键返回..."
 }
 
 # 主函数

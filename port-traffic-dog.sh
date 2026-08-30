@@ -2557,35 +2557,70 @@ install_update_script() {
     echo -e "${YELLOW}正在检查系统依赖...${NC}"
     check_dependencies true
 
-    echo -e "${YELLOW}正在下载最新版本...${NC}"
+    # 与主脚本(pf)相同的更新模式：先比对远端版本，有新版才询问下载
+    echo -e "${YELLOW}正在检查脚本更新...${NC}"
+    local remote_ver=$(curl -sL --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT \
+        "$SCRIPT_URL" 2>/dev/null | \
+        grep -E '^readonly SCRIPT_VERSION=' | head -1 | cut -d'"' -f2)
 
-    local temp_file=$(mktemp)
-
-    if download_with_sources "$SCRIPT_URL" "$temp_file"; then
-        if [ -s "$temp_file" ] && grep -q "端口流量狗" "$temp_file" 2>/dev/null; then
-            mv "$temp_file" "$SCRIPT_PATH"
-            chmod +x "$SCRIPT_PATH"
-
-            create_shortcut_command
-
-            echo -e "${YELLOW}正在更新通知模块...${NC}"
-            download_notification_modules >/dev/null 2>&1 || true
-
-            echo -e "${GREEN}依赖检查完成${NC}"
-            echo -e "${GREEN}脚本更新完成${NC}"
-            echo -e "${GREEN}通知模块已更新${NC}"
-        else
-            echo -e "${RED} 下载文件验证失败${NC}"
-            rm -f "$temp_file"
-        fi
-    else
-        echo -e "${RED} 下载失败，请检查网络连接${NC}"
-        rm -f "$temp_file"
+    if [ -z "$remote_ver" ]; then
+        echo -e "${RED}无法获取远端版本，请检查网络连接${NC}"
+        echo "────────────────────────────────────────────────────────"
+        read -p "按回车键返回..."
+        show_main_menu
+        return
     fi
 
-    echo "────────────────────────────────────────────────────────"
-    read -p "按回车键返回..."
-    show_main_menu
+    if [ "$remote_ver" = "$SCRIPT_VERSION" ]; then
+        echo -e "${GREEN}✓ 脚本已是最新版本 ($SCRIPT_VERSION)${NC}"
+        echo "────────────────────────────────────────────────────────"
+        read -p "按回车键返回..."
+        show_main_menu
+        return
+    fi
+
+    echo -e "${YELLOW}发现脚本新版本: ${SCRIPT_VERSION} → ${remote_ver}${NC}"
+    read -p "是否更新脚本？(y/n) [默认: y]: " update_choice
+    update_choice="${update_choice:-y}"
+    if ! [[ "$update_choice" =~ ^[Yy]$ ]]; then
+        echo -e "${BLUE}使用现有版本${NC}"
+        echo "────────────────────────────────────────────────────────"
+        read -p "按回车键返回..."
+        show_main_menu
+        return
+    fi
+
+    local temp_file=$(mktemp)
+    if ! download_with_sources "$SCRIPT_URL" "$temp_file"; then
+        echo -e "${RED} 下载失败，请检查网络连接${NC}"
+        rm -f "$temp_file"
+        echo "────────────────────────────────────────────────────────"
+        read -p "按回车键返回..."
+        show_main_menu
+        return
+    fi
+
+    if [ ! -s "$temp_file" ] || ! grep -q "端口流量狗" "$temp_file" 2>/dev/null; then
+        echo -e "${RED} 下载文件验证失败${NC}"
+        rm -f "$temp_file"
+        echo "────────────────────────────────────────────────────────"
+        read -p "按回车键返回..."
+        show_main_menu
+        return
+    fi
+
+    mv "$temp_file" "$SCRIPT_PATH"
+    chmod +x "$SCRIPT_PATH"
+    create_shortcut_command
+
+    echo -e "${YELLOW}正在更新通知模块...${NC}"
+    download_notification_modules >/dev/null 2>&1 || true
+
+    echo -e "${GREEN}脚本已更新到 ${remote_ver}${NC}"
+    echo -e "${GREEN}通知模块已更新${NC}"
+    echo -e "${YELLOW}正在重启脚本使新版本生效...${NC}"
+    sleep 1
+    exec bash "$SCRIPT_PATH"
 }
 
 create_shortcut_command() {

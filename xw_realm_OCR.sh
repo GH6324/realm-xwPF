@@ -9,6 +9,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 WHITE='\033[1;37m'
 NC='\033[0m'
+SCRIPT_VERSION="1.0.0"
 
 get_gmt8_time() {
     TZ='GMT-8' date "$@"

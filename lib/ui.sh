@@ -1,20 +1,47 @@
 
-# 每次更新OCR脚本
+# 子脚本按需更新：比对远端 SCRIPT_VERSION，本地已是最新则跳过下载。
+# 取不到远端版本(网络不通)时沿用本地文件，不阻断功能
+_update_sub_script() {
+    local script_url="$1"
+    local target_path="$2"
+    local display_name="$3"
+
+    mkdir -p "$(dirname "$target_path")"
+
+    # 本地缺文件时直接下载，不做版本比对
+    if [ ! -f "$target_path" ]; then
+        echo -e "${GREEN}正在下载${display_name}...${NC}"
+        if download_from_sources "$script_url" "$target_path"; then
+            chmod +x "$target_path"
+            return 0
+        else
+            echo -e "${RED}请检查网络连接${NC}"
+            return 1
+        fi
+    fi
+
+    local remote_ver=$(curl -sL --connect-timeout $SHORT_CONNECT_TIMEOUT --max-time $SHORT_MAX_TIMEOUT \
+        "$script_url" 2>/dev/null | \
+        grep -E '^SCRIPT_VERSION=' | head -1 | cut -d'"' -f2)
+    local local_ver=$(grep -E '^SCRIPT_VERSION=' "$target_path" 2>/dev/null | head -1 | cut -d'"' -f2)
+
+    if [ -n "$remote_ver" ] && [ "$remote_ver" != "$local_ver" ]; then
+        echo -e "${GREEN}发现${display_name}新版本: ${local_ver:-无} → ${remote_ver}，正在更新...${NC}"
+        if download_from_sources "$script_url" "$target_path"; then
+            chmod +x "$target_path"
+        else
+            echo -e "${RED}更新失败，使用现有版本${NC}"
+        fi
+    fi
+    return 0
+}
+
+# 按需更新OCR脚本
 download_realm_ocr_script() {
     local script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xw_realm_OCR.sh"
     local target_path="/etc/realm/xw_realm_OCR.sh"
 
-    echo -e "${GREEN}正在下载最新realm配置识别脚本...${NC}"
-
-    mkdir -p "$(dirname "$target_path")"
-
-    if download_from_sources "$script_url" "$target_path"; then
-        chmod +x "$target_path"
-        return 0
-    else
-        echo -e "${RED}请检查网络连接${NC}"
-        return 1
-    fi
+    _update_sub_script "$script_url" "$target_path" "realm配置识别脚本"
 }
 
 import_realm_config() {
@@ -615,40 +642,20 @@ get_gmt8_time() {
     TZ='GMT-8' date "$@"
 }
 
-# 下载故障转移管理脚本
+# 按需更新故障转移管理脚本：比对远端版本，本地已是最新则跳过下载
 download_failover_script() {
     local script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/xwFailover.sh"
     local target_path="/etc/realm/xwFailover.sh"
 
-    echo -e "${GREEN}正在下载最新故障转移脚本...${NC}"
-
-    mkdir -p "$(dirname "$target_path")"
-
-    if download_from_sources "$script_url" "$target_path"; then
-        chmod +x "$target_path"
-        return 0
-    else
-        echo -e "${RED}请检查网络连接${NC}"
-        return 1
-    fi
+    _update_sub_script "$script_url" "$target_path" "故障转移脚本"
 }
 
-# 下载中转网络链路测试脚本
+# 按需更新中转网络链路测试脚本：比对远端版本，本地已是最新则跳过下载
 download_speedtest_script() {
     local script_url="https://raw.githubusercontent.com/zywe03/realm-xwPF/main/speedtest.sh"
     local target_path="/etc/realm/speedtest.sh"
 
-    echo -e "${GREEN}正在下载最新测速脚本...${NC}"
-
-    mkdir -p "$(dirname "$target_path")"
-
-    if download_from_sources "$script_url" "$target_path"; then
-        chmod +x "$target_path"
-        return 0
-    else
-        echo -e "${RED}请检查网络连接${NC}"
-        return 1
-    fi
+    _update_sub_script "$script_url" "$target_path" "测速脚本"
 }
 # 中转网络链路测试菜单
 speedtest_menu() {
