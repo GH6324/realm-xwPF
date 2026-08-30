@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-readonly SCRIPT_VERSION="1.2.5"
+readonly SCRIPT_VERSION="1.2.6"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -127,15 +127,14 @@ setup_script_permissions() {
 }
 
 setup_cron_environment() {
-    # cron环境PATH不完整，需要设置完整路径
+    # cron环境PATH不完整，需要设置完整路径；@reboot 用于开机重建丢失的 nftables 监控规则
     local current_cron=$(crontab -l 2>/dev/null || true)
-    if ! echo "$current_cron" | grep -q "^PATH=.*sbin"; then
-        local temp_cron=$(mktemp)
-        echo "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" > "$temp_cron"
-        echo "$current_cron" | grep -v "^PATH=" >> "$temp_cron" || true
-        crontab "$temp_cron" 2>/dev/null || true
-        rm -f "$temp_cron"
-    fi
+    local temp_cron=$(mktemp)
+    echo "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" > "$temp_cron"
+    echo "$current_cron" | grep -v "^PATH=" | grep -v "# 端口流量狗开机自恢复" >> "$temp_cron" || true
+    echo "@reboot $SCRIPT_PATH --restore-monitoring >/dev/null 2>&1  # 端口流量狗开机自恢复" >> "$temp_cron"
+    crontab "$temp_cron" 2>/dev/null || true
+    rm -f "$temp_cron"
 }
 
 check_root() {
@@ -191,9 +190,9 @@ init_config() {
 EOF
     fi
 
-    init_nftables
     setup_exit_hooks
-    restore_monitoring_if_needed
+    # 与 cron 推送路径共用带锁的自愈入口，避免交互恢复和定时恢复并发把规则加双份
+    ensure_monitoring_state
 }
 
 init_nftables() {
@@ -411,7 +410,10 @@ save_traffic_data() {
     local temp_file=$(mktemp)
     local active_ports=($(get_active_ports 2>/dev/null || true))
 
+    # 无监控端口时清掉陈旧备份，避免开机把已删端口/旧值恢复回来
     if [ ${#active_ports[@]} -eq 0 ]; then
+        rm -f "$TRAFFIC_DATA_FILE"
+        rm -f "$temp_file"
         return 0
     fi
 
@@ -429,11 +431,8 @@ save_traffic_data() {
         fi
     done
 
-    if [ -s "$temp_file" ] && [ "$(jq 'keys | length' "$temp_file" 2>/dev/null)" != "0" ]; then
-        mv "$temp_file" "$TRAFFIC_DATA_FILE"
-    else
-        rm -f "$temp_file"
-    fi
+    # 全零也照写空备份：重置后若保留旧备份，重启会把重置前的值恢复回来
+    mv "$temp_file" "$TRAFFIC_DATA_FILE"
 }
 
 setup_exit_hooks() {
@@ -453,7 +452,7 @@ restore_monitoring_if_needed() {
         return 0
     fi
 
-    # 检查nftables规则是否存在，判断是否需要恢复
+    # 检查计数器与规则是否都在：规则被单独清掉（计数器还在）时计数会静默停止
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
     local need_restore=false
@@ -461,15 +460,15 @@ restore_monitoring_if_needed() {
     for port in "${active_ports[@]}"; do
         if is_port_range "$port"; then
             local port_safe=$(echo "$port" | tr '-' '_')
-            if ! nft list counter $family $table_name "port_${port_safe}_out" >/dev/null 2>&1; then
-                need_restore=true
-                break
-            fi
+            local out_name="port_${port_safe}_out"
         else
-            if ! nft list counter $family $table_name "port_${port}_out" >/dev/null 2>&1; then
-                need_restore=true
-                break
-            fi
+            local out_name="port_${port}_out"
+        fi
+
+        if ! nft list counter $family $table_name "$out_name" >/dev/null 2>&1 \
+            || ! nft list chain $family $table_name output 2>/dev/null | grep -q "counter name \"$out_name\""; then
+            need_restore=true
+            break
         fi
     done
 
@@ -489,6 +488,9 @@ restore_traffic_data_from_backup() {
     local backup_ports=($(jq -r 'keys[]' "$TRAFFIC_DATA_FILE" 2>/dev/null || true))
 
     for port in "${backup_ports[@]}"; do
+        # 配置里已删除的端口不恢复，避免留孤儿计数器
+        jq -e ".ports.\"$port\"" "$CONFIG_FILE" >/dev/null 2>&1 || continue
+
         local backup_input=$(jq -r ".\"$port\".input // 0" "$TRAFFIC_DATA_FILE" 2>/dev/null || echo "0")
         local backup_output=$(jq -r ".\"$port\".output // 0" "$TRAFFIC_DATA_FILE" 2>/dev/null || echo "0")
 
@@ -511,15 +513,24 @@ restore_counter_value() {
 
     if is_port_range "$port"; then
         local port_safe=$(echo "$port" | tr '-' '_')
-        if [ "$billing_mode" = "double" ]; then
-            nft add counter $family $table_name "port_${port_safe}_in" { packets 0 bytes $target_input } 2>/dev/null || true
-        fi
-        nft add counter $family $table_name "port_${port_safe}_out" { packets 0 bytes $target_output } 2>/dev/null || true
+        local in_name="port_${port_safe}_in"
+        local out_name="port_${port_safe}_out"
     else
-        if [ "$billing_mode" = "double" ]; then
-            nft add counter $family $table_name "port_${port}_in" { packets 0 bytes $target_input } 2>/dev/null || true
+        local in_name="port_${port}_in"
+        local out_name="port_${port}_out"
+    fi
+
+    # 计数器还在就保留内核里的实时值（比备份新）；缺失才用备份值重建。
+    # 语法用无花括号形式：nftables 0.9.3(Ubuntu 20.04) 不认带花括号的初值写法
+    if [ "$billing_mode" = "double" ]; then
+        if ! nft list counter $family $table_name "$in_name" >/dev/null 2>&1 \
+            && ! nft add counter $family $table_name "$in_name" packets 0 bytes $target_input 2>/dev/null; then
+            log_notification "恢复计数器 $in_name 失败 (端口 $port)"
         fi
-        nft add counter $family $table_name "port_${port}_out" { packets 0 bytes $target_output } 2>/dev/null || true
+    fi
+    if ! nft list counter $family $table_name "$out_name" >/dev/null 2>&1 \
+        && ! nft add counter $family $table_name "$out_name" packets 0 bytes $target_output 2>/dev/null; then
+        log_notification "恢复计数器 $out_name 失败 (端口 $port)"
     fi
 }
 
@@ -542,7 +553,7 @@ restore_all_monitoring_rules() {
         if [ "$limit_enabled" = "true" ] && [ "$rate_limit" != "unlimited" ]; then
             local tc_limit=$(convert_bandwidth_to_tc "$rate_limit")
             if [ -n "$tc_limit" ]; then
-                apply_tc_limit "$port" "$tc_limit"
+                apply_tc_limit "$port" "$tc_limit" || true
             fi
         fi
 
@@ -572,7 +583,7 @@ get_port_status_label() {
     local port_config=$(jq -r ".ports.\"$port\"" "$CONFIG_FILE" 2>/dev/null)
 
     local remark=$(echo "$port_config" | jq -r '.remark // ""')
-    local billing_mode=$(echo "$port_config" | jq -r '.billing_mode // "single"')
+    local billing_mode=$(echo "$port_config" | jq -r '.billing_mode // "double"')
     local limit_enabled=$(echo "$port_config" | jq -r '.bandwidth_limit.enabled // false')
     local rate_limit=$(echo "$port_config" | jq -r '.bandwidth_limit.rate // "unlimited"')
     local quota_enabled=$(echo "$port_config" | jq -r '.quota.enabled // true')
@@ -766,12 +777,12 @@ convert_bandwidth_to_tc() {
 generate_tc_class_id() {
     local port=$1
     if is_port_range "$port"; then
-        # 端口段使用0x2000+标记避免与单端口冲突
+        # 端口段：mark 映射进 [0x2000,0xFFFF]，classid minor 只有16位，直接加会越界
         local mark_id=$(generate_port_range_mark "$port")
-        echo "1:$(printf '%x' $((0x2000 + mark_id)))"
+        echo "1:$(printf '%x' $((0x2000 + mark_id % 0xE000)))"
     else
-        # 单端口使用0x1000+端口号
-        echo "1:$(printf '%x' $((0x1000 + port)))"
+        # 单端口：端口号(1-65535)本身就是合法 minor
+        echo "1:$(printf '%x' $port)"
     fi
 }
 
@@ -1195,6 +1206,9 @@ add_nftables_rules() {
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
     local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
 
+    # 幂等：重加规则前先清掉该端口的旧规则，避免恢复流程把规则翻倍
+    remove_port_rules_by_pattern "$port"
+
     if is_port_range "$port"; then
         local port_safe=$(echo "$port" | tr '-' '_')
         local mark_id=$(generate_port_range_mark "$port")
@@ -1275,7 +1289,8 @@ add_nftables_rules() {
     fi
 }
 
-remove_nftables_rules() {
+# 按句柄删除匹配端口的监控/配额规则（不动计数器对象），供重加规则前清理旧规则用
+remove_port_rules_by_pattern() {
     local port=$1
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
@@ -1310,6 +1325,14 @@ remove_nftables_rules() {
             break
         fi
     done
+}
+
+remove_nftables_rules() {
+    local port=$1
+    local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
+    local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
+
+    remove_port_rules_by_pattern "$port"
 
     # 删除计数器
     if is_port_range "$port"; then
@@ -1395,12 +1418,15 @@ set_port_bandwidth_limit() {
         # 转换为TC格式
         local tc_limit=$(convert_bandwidth_to_tc "$limit")
 
-        apply_tc_limit "$port" "$tc_limit"
+        if apply_tc_limit "$port" "$tc_limit"; then
+            update_config ".ports.\"$port\".bandwidth_limit.enabled = true |
+                .ports.\"$port\".bandwidth_limit.rate = \"$limit\""
 
-        update_config ".ports.\"$port\".bandwidth_limit.enabled = true |
-            .ports.\"$port\".bandwidth_limit.rate = \"$limit\""
-
-        echo -e "${GREEN}端口 $port 带宽限制设置成功: $limit${NC}"
+            echo -e "${GREEN}端口 $port 带宽限制设置成功: $limit${NC}"
+        else
+            echo -e "${RED}端口 $port 限速规则应用失败，请检查 tc/nftables 环境${NC}"
+            continue
+        fi
         success_count=$((success_count + 1))
     done
 
@@ -1774,10 +1800,18 @@ apply_tc_limit() {
     local total_limit=$2
     local interface=$(get_default_interface)
 
-    tc qdisc add dev $interface root handle 1: htb default 30 2>/dev/null || true
-    tc class add dev $interface parent 1: classid 1:1 htb rate 1000mbit 2>/dev/null || true
+    # 已有根qdisc(如systemd默认的fq_codel)时 add 会静默失败导致限速全灭；
+    # 已是自己的htb时 replace 又不支持change，所以先探测再创建
+    if ! tc qdisc show dev $interface 2>/dev/null | grep -q "qdisc htb 1:"; then
+        tc qdisc replace dev $interface root handle 1: htb default 30 2>/dev/null || true
+    fi
+    # 根类速率远超常见网卡，避免父类成为多端口总速率瓶颈
+    tc class replace dev $interface parent 1: classid 1:1 htb rate 100gbit 2>/dev/null || true
 
     local class_id=$(generate_tc_class_id "$port")
+    # 改档位时 filter/leaf 引用着旧 class 直接删会失败，先拆后建
+    remove_egress_filters "$port"
+    tc qdisc del dev $interface parent $class_id 2>/dev/null || true
     tc class del dev $interface classid $class_id 2>/dev/null || true
 
     # 计算burst参数以优化性能
@@ -1785,7 +1819,12 @@ apply_tc_limit() {
     local burst_bytes=$(calculate_tc_burst "$base_rate")
     local burst_size=$(format_tc_burst "$burst_bytes")
 
-    tc class add dev $interface parent 1:1 classid $class_id htb rate $total_limit ceil $total_limit burst $burst_size
+    if ! tc class add dev $interface parent 1:1 classid $class_id htb rate $total_limit ceil $total_limit burst $burst_size 2>/dev/null; then
+        log_notification "创建限速类 $class_id 失败 (端口 $port)"
+        return 1
+    fi
+    # 叶子挂 CAKE/fq_codel：多流公平调度+队列延迟控制，避免裸HTB的尾部丢包
+    attach_leaf_qdisc $interface "$class_id"
 
     if is_port_range "$port"; then
         # 端口段：使用fw分类器根据标记分类
@@ -1808,6 +1847,154 @@ apply_tc_limit() {
         tc filter add dev $interface protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
             match ip protocol 17 0xff match ip dport $port 0xffff flowid $class_id 2>/dev/null || true
     fi
+
+    # 出向(下载)+入向(上传)双向限速：入向经 ifb0 虚拟设备借用出向整形能力
+    apply_ingress_shaping "$port" "$total_limit"
+    return 0
+}
+
+# 删除该端口挂出向接口上的 u32/fw 分类器
+remove_egress_filters() {
+    local port=$1
+    local interface=$(get_default_interface)
+
+    if is_port_range "$port"; then
+        local mark_id=$(generate_port_range_mark "$port")
+        local mark_hex=$(printf '0x%x' "$mark_id")
+        tc filter del dev $interface protocol ip parent 1:0 prio 1 handle $mark_hex fw 2>/dev/null || true
+        tc filter del dev $interface protocol ip parent 1:0 prio 1 handle $mark_id fw 2>/dev/null || true
+    else
+        local filter_prio=$((port % 1000 + 1))
+        tc filter del dev $interface protocol ip parent 1:0 prio $filter_prio u32 \
+            match ip protocol 6 0xff match ip sport $port 0xffff 2>/dev/null || true
+        tc filter del dev $interface protocol ip parent 1:0 prio $filter_prio u32 \
+            match ip protocol 6 0xff match ip dport $port 0xffff 2>/dev/null || true
+        tc filter del dev $interface protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
+            match ip protocol 17 0xff match ip sport $port 0xffff 2>/dev/null || true
+        tc filter del dev $interface protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
+            match ip protocol 17 0xff match ip dport $port 0xffff 2>/dev/null || true
+    fi
+}
+
+# 叶子 qdisc 选型：CAKE 优先（内置流公平调度+缓冲自适应），内核未编译时回退 fq_codel
+attach_leaf_qdisc() {
+    local dev=$1
+    local class_id=$2
+
+    # 挂载失败才说明内核不支持该类型；已挂时 replace 语义幂等
+    if ! tc qdisc replace dev $dev parent $class_id cake 2>/dev/null; then
+        tc qdisc replace dev $dev parent $class_id fq_codel 2>/dev/null || true
+    fi
+}
+
+# 入向限速：tc 只能整形出向流量，把入向包经 ifb0 重定向后按出向整形。
+# 排队缓冲而非丢包，对端 TCP 收到的是平滑降速信号而不是连续丢包
+apply_ingress_shaping() {
+    local port=$1
+    local total_limit=$2
+    local interface=$(get_default_interface)
+
+    # ifb0 共享单设备：所有端口的入向限速都挂在这上面，首个端口启用时创建
+    if ! ip link show ifb0 >/dev/null 2>&1; then
+        modprobe ifb numifbs=1 2>/dev/null || true
+        ip link add ifb0 type ifb 2>/dev/null || true
+        ip link set ifb0 up 2>/dev/null || true
+    fi
+    # ifb 是 NOARP 虚拟设备，up 后 operstate 仍是 UNKNOWN，判据用 UP flag
+    if ! ip link show ifb0 2>/dev/null | grep -q "<.*UP.*>"; then
+        log_notification "ifb0 创建失败，端口 $port 入向限速未生效"
+        return 1
+    fi
+
+    # ingress 根qdisc：把入向包捕获送进 ifb0。
+    # 注意 "qdisc show dev X ingress" 在无 ingress 时也会打印 root qdisc，判据必须查全量输出里的 ingress 行
+    if ! tc qdisc show dev $interface 2>/dev/null | grep -q "^qdisc ingress"; then
+        tc qdisc add dev $interface handle ffff: ingress 2>/dev/null || true
+    fi
+    # 全量重定向只装一次：重复装会按相同 match 叠加多条等价规则
+    if ! tc filter show dev $interface parent ffff: 2>/dev/null | grep -q "mirred.*ifb0"; then
+        tc filter add dev $interface parent ffff: protocol ip u32 match u32 0 0 \
+            action mirred egress redirect dev ifb0 2>/dev/null || true
+    fi
+
+    # ifb0 上建与出向对称的 HTB 树，default 指向 100gbit 兜底类（未限速端口直通）
+    if ! tc qdisc show dev ifb0 2>/dev/null | grep -q "qdisc htb 1:"; then
+        tc qdisc add dev ifb0 root handle 1: htb default 1 2>/dev/null || true
+    fi
+    tc class replace dev ifb0 parent 1: classid 1:1 htb rate 100gbit 2>/dev/null || true
+
+    local class_id=$(generate_tc_class_id "$port")
+    # 拆除顺序必须 filter → leaf → class：任何一环引用着 class 都会 "HTB class in use"
+    remove_ingress_filters "$port"
+    tc qdisc del dev ifb0 parent $class_id 2>/dev/null || true
+    tc class del dev ifb0 classid $class_id 2>/dev/null || true
+    if ! tc class add dev ifb0 parent 1:1 classid $class_id htb rate $total_limit ceil $total_limit 2>/dev/null; then
+        log_notification "创建入向限速类 $class_id 失败 (端口 $port)"
+        return 1
+    fi
+    attach_leaf_qdisc ifb0 "$class_id"
+
+    # 入向方向相反：dport 是用户流量，sport 是中转场景本地回源端口
+    if is_port_range "$port"; then
+        local mark_id=$(generate_port_range_mark "$port")
+        tc filter add dev ifb0 protocol ip parent 1:0 prio 1 handle $mark_id fw flowid $class_id 2>/dev/null || true
+    else
+        local filter_prio=$((port % 1000 + 1))
+        tc filter add dev ifb0 protocol ip parent 1:0 prio $filter_prio u32 \
+            match ip protocol 6 0xff match ip dport $port 0xffff flowid $class_id 2>/dev/null || true
+        tc filter add dev ifb0 protocol ip parent 1:0 prio $filter_prio u32 \
+            match ip protocol 6 0xff match ip sport $port 0xffff flowid $class_id 2>/dev/null || true
+        tc filter add dev ifb0 protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
+            match ip protocol 17 0xff match ip dport $port 0xffff flowid $class_id 2>/dev/null || true
+        tc filter add dev ifb0 protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
+            match ip protocol 17 0xff match ip sport $port 0xffff flowid $class_id 2>/dev/null || true
+    fi
+    return 0
+}
+
+# 删除该端口挂在 ifb0 上的 u32/fw 分类器
+remove_ingress_filters() {
+    local port=$1
+
+    if is_port_range "$port"; then
+        local mark_id=$(generate_port_range_mark "$port")
+        local mark_hex=$(printf '0x%x' "$mark_id")
+        tc filter del dev ifb0 protocol ip parent 1:0 prio 1 handle $mark_hex fw 2>/dev/null || true
+        tc filter del dev ifb0 protocol ip parent 1:0 prio 1 handle $mark_id fw 2>/dev/null || true
+    else
+        local filter_prio=$((port % 1000 + 1))
+        tc filter del dev ifb0 protocol ip parent 1:0 prio $filter_prio u32 \
+            match ip protocol 6 0xff match ip dport $port 0xffff 2>/dev/null || true
+        tc filter del dev ifb0 protocol ip parent 1:0 prio $filter_prio u32 \
+            match ip protocol 6 0xff match ip sport $port 0xffff 2>/dev/null || true
+        tc filter del dev ifb0 protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
+            match ip protocol 17 0xff match ip dport $port 0xffff 2>/dev/null || true
+        tc filter del dev ifb0 protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
+            match ip protocol 17 0xff match ip sport $port 0xffff 2>/dev/null || true
+    fi
+}
+
+# 拆除入向限速链路：filter → leaf → class；所有端口都拆完后连同 ifb0 和 ingress 一起清理
+remove_ingress_shaping() {
+    local port=$1
+    local interface=$(get_default_interface)
+
+    if ! ip link show ifb0 >/dev/null 2>&1; then
+        return 0
+    fi
+
+    local class_id=$(generate_tc_class_id "$port")
+    remove_ingress_filters "$port"
+    tc qdisc del dev ifb0 parent $class_id 2>/dev/null || true
+    tc class del dev ifb0 classid $class_id 2>/dev/null || true
+
+    # ifb0 上已无限速类：整条链路拆除
+    if [ "$(tc class show dev ifb0 2>/dev/null | grep -c "parent 1:1")" -eq 0 ]; then
+        tc qdisc del dev ifb0 root 2>/dev/null || true
+        tc qdisc del dev $interface ingress 2>/dev/null || true
+        ip link set ifb0 down 2>/dev/null || true
+        ip link del ifb0 2>/dev/null || true
+    fi
 }
 
 # 删除TC带宽限制
@@ -1817,31 +2004,16 @@ remove_tc_limit() {
 
     local class_id=$(generate_tc_class_id "$port")
 
-    if is_port_range "$port"; then
-        # 端口段：删除基于标记的过滤器
-        local mark_id=$(generate_port_range_mark "$port")
-        local mark_hex=$(printf '0x%x' "$mark_id")
-        
-        # 十六进制handle删除
-        tc filter del dev $interface protocol ip parent 1:0 prio 1 handle $mark_hex fw 2>/dev/null || true
-        # 备选：十进制handle删除
-        tc filter del dev $interface protocol ip parent 1:0 prio 1 handle $mark_id fw 2>/dev/null || true
-    else
-        # 单端口：删除u32精确匹配过滤器
-        local filter_prio=$((port % 1000 + 1))
-
-        tc filter del dev $interface protocol ip parent 1:0 prio $filter_prio u32 \
-            match ip protocol 6 0xff match ip sport $port 0xffff 2>/dev/null || true
-        tc filter del dev $interface protocol ip parent 1:0 prio $filter_prio u32 \
-            match ip protocol 6 0xff match ip dport $port 0xffff 2>/dev/null || true
-
-        tc filter del dev $interface protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
-            match ip protocol 17 0xff match ip sport $port 0xffff 2>/dev/null || true
-        tc filter del dev $interface protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
-            match ip protocol 17 0xff match ip dport $port 0xffff 2>/dev/null || true
-    fi
-
+    remove_egress_filters "$port"
+    tc qdisc del dev $interface parent $class_id 2>/dev/null || true
     tc class del dev $interface classid $class_id 2>/dev/null || true
+
+    remove_ingress_shaping "$port"
+
+    # 该接口已无任何端口限速类时恢复默认根qdisc，避免残留htb
+    if [ "$(tc class show dev $interface 2>/dev/null | grep -c 'parent 1:1')" -eq 0 ]; then
+        tc qdisc del dev $interface root 2>/dev/null || true
+    fi
 }
 
 manage_traffic_reset() {
@@ -1986,7 +2158,7 @@ immediate_reset() {
         local traffic_data=($(get_nftables_counter_data "$port"))
         local input_bytes=${traffic_data[0]}
         local output_bytes=${traffic_data[1]}
-        local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"single\"" "$CONFIG_FILE")
+        local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
         local total_bytes=$(calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode")
         local total_formatted=$(format_bytes $total_bytes)
 
@@ -2006,7 +2178,7 @@ immediate_reset() {
             local traffic_data=($(get_nftables_counter_data "$port"))
             local input_bytes=${traffic_data[0]}
             local output_bytes=${traffic_data[1]}
-            local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"single\"" "$CONFIG_FILE")
+            local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
             local total_bytes=$(calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode")
 
             reset_port_nftables_counters "$port"
@@ -2312,7 +2484,7 @@ import_config() {
         if [ "$limit_enabled" = "true" ] && [ "$rate_limit" != "unlimited" ]; then
             local tc_limit=$(convert_bandwidth_to_tc "$rate_limit")
             if [ -n "$tc_limit" ]; then
-                apply_tc_limit "$port" "$tc_limit"
+                apply_tc_limit "$port" "$tc_limit" || true
             fi
         fi
     done
@@ -2458,6 +2630,7 @@ uninstall_script() {
 
         remove_telegram_notification_cron 2>/dev/null || true
         remove_wecom_notification_cron 2>/dev/null || true
+        remove_restore_cron 2>/dev/null || true
 
         rm -rf "$CONFIG_DIR" 2>/dev/null || true
         rm -f "/usr/local/bin/$SHORTCUT_COMMAND" 2>/dev/null || true
@@ -2615,6 +2788,13 @@ remove_telegram_notification_cron() {
 remove_wecom_notification_cron() {
     local temp_cron=$(mktemp)
     crontab -l 2>/dev/null | grep -v "# 端口流量狗企业wx 通知" > "$temp_cron" || true
+    crontab "$temp_cron"
+    rm -f "$temp_cron"
+}
+
+remove_restore_cron() {
+    local temp_cron=$(mktemp)
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗开机自恢复" > "$temp_cron" || true
     crontab "$temp_cron"
     rm -f "$temp_cron"
 }
@@ -2778,22 +2958,43 @@ send_status_notification() {
     fi
 }
 
+# cron/开机路径的状态自愈：表被重启或外部工具清掉后静默重建，避免推送全 0
+ensure_monitoring_state() {
+    # 推送、重置、交互会话可能同时触发恢复，并发重加规则会翻倍，用文件锁串行化
+    mkdir -p "$CONFIG_DIR"
+    exec 9>"$CONFIG_DIR/.restore.lock"
+    flock 9
+    init_nftables
+    restore_monitoring_if_needed
+    flock -u 9 2>/dev/null || true
+    exec 9>&-
+}
+
 main() {
     check_root
 
-    # cron 快速路径：跳过重型初始化（依赖检查、通知模块下载、规则恢复等）
+    # cron 快速路径：跳过重型初始化（依赖检查、通知模块下载等），
+    # 但取数前先自愈监控状态并落盘备份，推送/重置读到的才是真实值
     if [ $# -gt 0 ]; then
         case $1 in
+            --restore-monitoring)
+                ensure_monitoring_state
+                exit 0
+                ;;
             --reset-port)
                 if [ $# -lt 2 ]; then
                     echo -e "${RED}错误：--reset-port 需要指定端口号${NC}"
                     exit 1
                 fi
+                ensure_monitoring_state
                 auto_reset_port "$2"
+                save_traffic_data
                 exit 0
                 ;;
             --send-telegram-status)
                 local telegram_script="$CONFIG_DIR/notifications/telegram.sh"
+                ensure_monitoring_state
+                save_traffic_data
                 if [ -f "$telegram_script" ]; then
                     source "$telegram_script"
                     telegram_send_status_notification
@@ -2802,6 +3003,8 @@ main() {
                 ;;
             --send-wecom-status)
                 local wecom_script="$CONFIG_DIR/notifications/wecom.sh"
+                ensure_monitoring_state
+                save_traffic_data
                 if [ -f "$wecom_script" ]; then
                     source "$wecom_script"
                     wecom_send_status_notification
@@ -2809,6 +3012,8 @@ main() {
                 exit 0
                 ;;
             --send-status)
+                ensure_monitoring_state
+                save_traffic_data
                 send_status_notification
                 exit 0
                 ;;
@@ -2851,6 +3056,7 @@ main() {
                 echo "  --send-telegram-status    发送Telegram状态通知"
                 echo "  --send-wecom-status       发送企业wx 状态通知"
                 echo "  --reset-port PORT         重置指定端口流量"
+                echo "  --restore-monitoring      重建丢失的监控规则(开机自恢复用)"
                 echo
                 echo -e "${GREEN}快捷命令: $SHORTCUT_COMMAND${NC}"
                 exit 1
