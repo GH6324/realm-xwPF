@@ -579,7 +579,10 @@ get_port_status_label() {
         if [ "$monthly_limit" != "unlimited" ]; then
             local current_usage=$(get_port_monthly_usage "$port")
             local limit_bytes=$(parse_size_to_bytes "$monthly_limit")
-            local usage_percent=$((current_usage * 100 / limit_bytes))
+            local usage_percent=0
+            if [ -n "$limit_bytes" ] && [ "$limit_bytes" -gt 0 ]; then
+                usage_percent=$((current_usage * 100 / limit_bytes))
+            fi
 
             local quota_display="$monthly_limit"
             if [ "$billing_mode" = "double" ]; then
@@ -665,10 +668,10 @@ validate_quota() {
 
 parse_size_to_bytes() {
     local size_str=$1
-    local number=$(echo "$size_str" | grep -o '^[0-9]\+')
-    local unit=$(echo "$size_str" | grep -o '[A-Za-z]\+$' | tr '[:lower:]' '[:upper:]')
+    local number=$(echo "$size_str" | grep -o '^[0-9]\+' || true)
+    local unit=$(echo "$size_str" | grep -o '[A-Za-z]\+$' | tr '[:lower:]' '[:upper:]' || true)
 
-    [ -z "$number" ] && echo "0" && return 1
+    [ -z "$number" ] && echo "0" && return 0
 
     case $unit in
         "MB"|"M") echo $((number * 1048576)) ;;
@@ -881,7 +884,7 @@ add_port_monitoring() {
     while read line; do
         if [[ "$line" =~ LISTEN|UNCONN ]]; then
             local_addr=$(echo "$line" | awk '{print $5}')
-            port=$(echo "$local_addr" | grep -o ':[0-9]*$' | cut -d':' -f2)
+            port=$(echo "$local_addr" | grep -o ':[0-9]*$' | cut -d':' -f2 || true)
             program=$(echo "$line" | awk '{print $7}' | cut -d'"' -f2 2>/dev/null || echo "")
 
             if [ -n "$port" ] && [ -n "$program" ] && [ "$program" != "-" ]; then
@@ -2024,7 +2027,7 @@ remove_ingress_shaping() {
     tc class del dev ifb0 classid $class_id 2>/dev/null || true
 
     # ifb0 上已无限速类：整条链路拆除（所有装过 ingress 的网卡一起清）
-    if [ "$(tc class show dev ifb0 2>/dev/null | grep -c "parent 1:1")" -eq 0 ]; then
+    if [ "$(tc class show dev ifb0 2>/dev/null | grep -c "parent 1:1" || true)" -eq 0 ]; then
         local dev
         for dev in $(list_shaping_interfaces); do
             tc qdisc del dev $dev ingress 2>/dev/null || true
@@ -2052,7 +2055,7 @@ remove_tc_limit() {
 
     # 所有网卡都没有剩余限速类时，把各网卡的 htb 根一并还原，避免残留
     for dev in $(list_shaping_interfaces); do
-        remaining=$((remaining + $(tc class show dev $dev 2>/dev/null | grep -c "parent 1:1")))
+        remaining=$((remaining + $(tc class show dev $dev 2>/dev/null | grep -c "parent 1:1" || true)))
     done
     if [ "$remaining" -eq 0 ]; then
         for dev in $(list_shaping_interfaces); do

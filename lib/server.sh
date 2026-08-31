@@ -438,7 +438,7 @@ get_mptcp_connections_stats() {
     local subflows=0
 
     if [ -n "$ss_output" ]; then
-        mptcp_connections=$(echo "$ss_output" | grep -c ESTAB 2>/dev/null)
+        mptcp_connections=$(echo "$ss_output" | grep -c ESTAB 2>/dev/null || true)
 
         # 统计子流数量 (总行数减1，最少为0)
         local total_lines=$(echo "$ss_output" | wc -l)
