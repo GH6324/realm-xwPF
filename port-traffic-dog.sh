@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-readonly SCRIPT_VERSION="1.2.6"
+readonly SCRIPT_VERSION="1.2.7"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -205,33 +205,6 @@ init_nftables() {
     nft add chain $family $table_name forward { type filter hook forward priority 0\; } 2>/dev/null || true
 }
 
-get_network_interfaces() {
-    local interfaces=()
-
-    while IFS= read -r interface; do
-        if [[ "$interface" != "lo" ]] && [[ "$interface" != "" ]]; then
-            interfaces+=("$interface")
-        fi
-    done < <(ip link show | grep "state UP" | awk -F': ' '{print $2}' | cut -d'@' -f1)
-
-    printf '%s\n' "${interfaces[@]}"
-}
-
-get_default_interface() {
-    local default_interface=$(ip route | grep default | awk '{print $5}' | head -n1)
-
-    if [ -n "$default_interface" ]; then
-        echo "$default_interface"
-        return
-    fi
-
-    local interfaces=($(get_network_interfaces))
-    if [ ${#interfaces[@]} -gt 0 ]; then
-        echo "${interfaces[0]}"
-    else
-        echo "eth0"
-    fi
-}
 
 format_bytes() {
     local bytes=$1
@@ -1795,96 +1768,130 @@ remove_nftables_quota() {
     nft delete quota $family $table_name "$quota_name" 2>/dev/null || true
 }
 
+# 需要挂限速的真实网卡：排除回环/ifb 自身/容器与虚拟网桥/隧道。
+# 出向和入向都必须覆盖全部真实网卡——回复包从连接进入的网卡发出，
+# 只挂默认路由网卡时，多网卡 VPS 的另一个网卡会完全绕过限速
+list_shaping_interfaces() {
+    ls /sys/class/net | grep -v -E "^(lo|ifb|docker0|br-.*|veth.*|virbr.*|wg.*|tun.*|tap.*)$"
+}
+
 apply_tc_limit() {
     local port=$1
     local total_limit=$2
-    local interface=$(get_default_interface)
 
-    # 已有根qdisc(如systemd默认的fq_codel)时 add 会静默失败导致限速全灭；
-    # 已是自己的htb时 replace 又不支持change，所以先探测再创建
-    if ! tc qdisc show dev $interface 2>/dev/null | grep -q "qdisc htb 1:"; then
-        tc qdisc replace dev $interface root handle 1: htb default 30 2>/dev/null || true
-    fi
-    # 根类速率远超常见网卡，避免父类成为多端口总速率瓶颈
-    tc class replace dev $interface parent 1: classid 1:1 htb rate 100gbit 2>/dev/null || true
+
+    # 出向整形挂到所有真实网卡(幂等)；已有根qdisc(如systemd默认fq_codel)时
+    # add 会静默失败导致限速全灭，而已是自己的htb时 replace 不支持change，先探测再创建
+    local dev
+    for dev in $(list_shaping_interfaces); do
+        if ! tc qdisc show dev $dev 2>/dev/null | grep -q "qdisc htb 1:"; then
+            tc qdisc replace dev $dev root handle 1: htb default 30 2>/dev/null || true
+        fi
+        # 根类速率远超常见网卡，避免父类成为多端口总速率瓶颈
+        tc class replace dev $dev parent 1: classid 1:1 htb rate 100gbit 2>/dev/null || true
+    done
 
     local class_id=$(generate_tc_class_id "$port")
     # 改档位时 filter/leaf 引用着旧 class 直接删会失败，先拆后建
     remove_egress_filters "$port"
-    tc qdisc del dev $interface parent $class_id 2>/dev/null || true
-    tc class del dev $interface classid $class_id 2>/dev/null || true
 
-    # 计算burst参数以优化性能
-    local base_rate=$(parse_tc_rate_to_kbps "$total_limit")
-    local burst_bytes=$(calculate_tc_burst "$base_rate")
+    # 计算burst：取 50ms 速率量，给短连接/慢启动留突发余量
+    local rate_kbps=$(parse_tc_rate_to_kbps "$total_limit")
+    local burst_bytes=$(calculate_tc_burst "$rate_kbps")
     local burst_size=$(format_tc_burst "$burst_bytes")
 
-    if ! tc class add dev $interface parent 1:1 classid $class_id htb rate $total_limit ceil $total_limit burst $burst_size 2>/dev/null; then
-        log_notification "创建限速类 $class_id 失败 (端口 $port)"
-        return 1
-    fi
-    # 叶子挂 CAKE/fq_codel：多流公平调度+队列延迟控制，避免裸HTB的尾部丢包
-    attach_leaf_qdisc $interface "$class_id"
-
-    if is_port_range "$port"; then
-        # 端口段：使用fw分类器根据标记分类
-        local mark_id=$(generate_port_range_mark "$port")
-        tc filter add dev $interface protocol ip parent 1:0 prio 1 handle $mark_id fw flowid $class_id 2>/dev/null || true
-
-    else
-        # 单端口：使用u32精确匹配，避免优先级冲突
-        local filter_prio=$((port % 1000 + 1))
-
-        # TCP协议过滤器
-        tc filter add dev $interface protocol ip parent 1:0 prio $filter_prio u32 \
-            match ip protocol 6 0xff match ip sport $port 0xffff flowid $class_id 2>/dev/null || true
-        tc filter add dev $interface protocol ip parent 1:0 prio $filter_prio u32 \
-            match ip protocol 6 0xff match ip dport $port 0xffff flowid $class_id 2>/dev/null || true
-
-        # UDP协议过滤器
-        tc filter add dev $interface protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
-            match ip protocol 17 0xff match ip sport $port 0xffff flowid $class_id 2>/dev/null || true
-        tc filter add dev $interface protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
-            match ip protocol 17 0xff match ip dport $port 0xffff flowid $class_id 2>/dev/null || true
-    fi
+    local ok_count=0
+    for dev in $(list_shaping_interfaces); do
+        tc qdisc del dev $dev parent $class_id 2>/dev/null || true
+        tc class del dev $dev classid $class_id 2>/dev/null || true
+        if tc class add dev $dev parent 1:1 classid $class_id htb rate $total_limit ceil $total_limit burst $burst_size 2>/dev/null; then
+            attach_leaf_qdisc $dev "$class_id"
+            add_egress_filters "$dev" "$port" "$class_id"
+            ok_count=$((ok_count + 1))
+        else
+            log_notification "创建限速类 $class_id 失败 (端口 $port, 网卡 $dev)"
+        fi
+    done
+    [ $ok_count -eq 0 ] && return 1
 
     # 出向(下载)+入向(上传)双向限速：入向经 ifb0 虚拟设备借用出向整形能力
     apply_ingress_shaping "$port" "$total_limit"
     return 0
 }
 
-# 删除该端口挂出向接口上的 u32/fw 分类器
-remove_egress_filters() {
-    local port=$1
-    local interface=$(get_default_interface)
+# 在指定网卡上挂某端口的出向分类器：单端口用 u32 精确匹配，端口段用 fw 标记；v4/v6 都要覆盖
+add_egress_filters() {
+    local dev=$1
+    local port=$2
+    local class_id=$3
 
     if is_port_range "$port"; then
         local mark_id=$(generate_port_range_mark "$port")
-        local mark_hex=$(printf '0x%x' "$mark_id")
-        tc filter del dev $interface protocol ip parent 1:0 prio 1 handle $mark_hex fw 2>/dev/null || true
-        tc filter del dev $interface protocol ip parent 1:0 prio 1 handle $mark_id fw 2>/dev/null || true
+        tc filter add dev $dev protocol ip parent 1:0 prio 1 handle $mark_id fw flowid $class_id 2>/dev/null || true
+        tc filter add dev $dev protocol ipv6 parent 1:0 prio 2 handle $mark_id fw flowid $class_id 2>/dev/null || true
     else
         local filter_prio=$((port % 1000 + 1))
-        tc filter del dev $interface protocol ip parent 1:0 prio $filter_prio u32 \
-            match ip protocol 6 0xff match ip sport $port 0xffff 2>/dev/null || true
-        tc filter del dev $interface protocol ip parent 1:0 prio $filter_prio u32 \
-            match ip protocol 6 0xff match ip dport $port 0xffff 2>/dev/null || true
-        tc filter del dev $interface protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
-            match ip protocol 17 0xff match ip sport $port 0xffff 2>/dev/null || true
-        tc filter del dev $interface protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
-            match ip protocol 17 0xff match ip dport $port 0xffff 2>/dev/null || true
+        tc filter add dev $dev protocol ip parent 1:0 prio $filter_prio u32 \
+            match ip protocol 6 0xff match ip sport $port 0xffff flowid $class_id 2>/dev/null || true
+        tc filter add dev $dev protocol ip parent 1:0 prio $filter_prio u32 \
+            match ip protocol 6 0xff match ip dport $port 0xffff flowid $class_id 2>/dev/null || true
+        tc filter add dev $dev protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
+            match ip protocol 17 0xff match ip sport $port 0xffff flowid $class_id 2>/dev/null || true
+        tc filter add dev $dev protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
+            match ip protocol 17 0xff match ip dport $port 0xffff flowid $class_id 2>/dev/null || true
+        # IPv6：只抓 protocol ip 时 v6 流量完全绕过限速
+        tc filter add dev $dev protocol ipv6 parent 1:0 prio $((filter_prio + 2000)) u32 \
+            match u8 6 0xff at 6 match u16 $port 0xffff at 40 flowid $class_id 2>/dev/null || true
+        tc filter add dev $dev protocol ipv6 parent 1:0 prio $((filter_prio + 2000)) u32 \
+            match u8 6 0xff at 6 match u16 $port 0xffff at 42 flowid $class_id 2>/dev/null || true
+        tc filter add dev $dev protocol ipv6 parent 1:0 prio $((filter_prio + 3000)) u32 \
+            match u8 17 0xff at 6 match u16 $port 0xffff at 40 flowid $class_id 2>/dev/null || true
+        tc filter add dev $dev protocol ipv6 parent 1:0 prio $((filter_prio + 3000)) u32 \
+            match u8 17 0xff at 6 match u16 $port 0xffff at 42 flowid $class_id 2>/dev/null || true
     fi
 }
 
-# 叶子 qdisc 选型：CAKE 优先（内置流公平调度+缓冲自适应），内核未编译时回退 fq_codel
+# 删除该端口在各网卡上的出向分类器（与 add_egress_filters 的 v4+v6 全量对称）
+remove_egress_filters() {
+    local port=$1
+    local dev
+
+    for dev in $(list_shaping_interfaces); do
+        if is_port_range "$port"; then
+            local mark_id=$(generate_port_range_mark "$port")
+            local mark_hex=$(printf '0x%x' "$mark_id")
+            tc filter del dev $dev protocol ip parent 1:0 prio 1 handle $mark_hex fw 2>/dev/null || true
+            tc filter del dev $dev protocol ip parent 1:0 prio 1 handle $mark_id fw 2>/dev/null || true
+            tc filter del dev $dev protocol ipv6 parent 1:0 prio 2 handle $mark_hex fw 2>/dev/null || true
+            tc filter del dev $dev protocol ipv6 parent 1:0 prio 2 handle $mark_id fw 2>/dev/null || true
+        else
+            local filter_prio=$((port % 1000 + 1))
+            tc filter del dev $dev protocol ip parent 1:0 prio $filter_prio u32 \
+                match ip protocol 6 0xff match ip sport $port 0xffff 2>/dev/null || true
+            tc filter del dev $dev protocol ip parent 1:0 prio $filter_prio u32 \
+                match ip protocol 6 0xff match ip dport $port 0xffff 2>/dev/null || true
+            tc filter del dev $dev protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
+                match ip protocol 17 0xff match ip sport $port 0xffff 2>/dev/null || true
+            tc filter del dev $dev protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
+                match ip protocol 17 0xff match ip dport $port 0xffff 2>/dev/null || true
+            tc filter del dev $dev protocol ipv6 parent 1:0 prio $((filter_prio + 2000)) u32 \
+                match u8 6 0xff at 6 match u16 $port 0xffff at 40 2>/dev/null || true
+            tc filter del dev $dev protocol ipv6 parent 1:0 prio $((filter_prio + 2000)) u32 \
+                match u8 6 0xff at 6 match u16 $port 0xffff at 42 2>/dev/null || true
+            tc filter del dev $dev protocol ipv6 parent 1:0 prio $((filter_prio + 3000)) u32 \
+                match u8 17 0xff at 6 match u16 $port 0xffff at 40 2>/dev/null || true
+            tc filter del dev $dev protocol ipv6 parent 1:0 prio $((filter_prio + 3000)) u32 \
+                match u8 17 0xff at 6 match u16 $port 0xffff at 42 2>/dev/null || true
+        fi
+    done
+}
+
 attach_leaf_qdisc() {
     local dev=$1
     local class_id=$2
 
-    # 挂载失败才说明内核不支持该类型；已挂时 replace 语义幂等
-    if ! tc qdisc replace dev $dev parent $class_id cake 2>/dev/null; then
-        tc qdisc replace dev $dev parent $class_id fq_codel 2>/dev/null || true
-    fi
+    # fq_codel 内核默认参数(target 5ms/interval 100ms)，RFC 8290 行业标准
+    tc qdisc replace dev $dev parent $class_id fq_codel 2>/dev/null || true
 }
 
 # 入向限速：tc 只能整形出向流量，把入向包经 ifb0 重定向后按出向整形。
@@ -1892,7 +1899,6 @@ attach_leaf_qdisc() {
 apply_ingress_shaping() {
     local port=$1
     local total_limit=$2
-    local interface=$(get_default_interface)
 
     # ifb0 共享单设备：所有端口的入向限速都挂在这上面，首个端口启用时创建
     if ! ip link show ifb0 >/dev/null 2>&1; then
@@ -1906,16 +1912,23 @@ apply_ingress_shaping() {
         return 1
     fi
 
-    # ingress 根qdisc：把入向包捕获送进 ifb0。
+    # ingress 根qdisc：把入向包捕获送进 ifb0。必须在所有非lo网卡上安装——
+    # 只挂默认路由网卡时，多网卡VPS上从其他网卡进来的流量会完全绕过限速
     # 注意 "qdisc show dev X ingress" 在无 ingress 时也会打印 root qdisc，判据必须查全量输出里的 ingress 行
-    if ! tc qdisc show dev $interface 2>/dev/null | grep -q "^qdisc ingress"; then
-        tc qdisc add dev $interface handle ffff: ingress 2>/dev/null || true
-    fi
-    # 全量重定向只装一次：重复装会按相同 match 叠加多条等价规则
-    if ! tc filter show dev $interface parent ffff: 2>/dev/null | grep -q "mirred.*ifb0"; then
-        tc filter add dev $interface parent ffff: protocol ip u32 match u32 0 0 \
-            action mirred egress redirect dev ifb0 2>/dev/null || true
-    fi
+    local dev
+    for dev in $(list_shaping_interfaces); do
+        if ! tc qdisc show dev $dev 2>/dev/null | grep -q "^qdisc ingress"; then
+            tc qdisc add dev $dev handle ffff: ingress 2>/dev/null || true
+        fi
+        # 全量重定向只装一次：重复装会按相同 match 叠加多条等价规则
+        if ! tc filter show dev $dev parent ffff: 2>/dev/null | grep -q "mirred.*ifb0"; then
+            tc filter add dev $dev parent ffff: protocol ip u32 match u32 0 0 \
+                action mirred egress redirect dev ifb0 2>/dev/null || true
+            # IPv6 同样重定向：vpn 常走 v6，只抓 ip 会漏限
+            tc filter add dev $dev parent ffff: protocol ipv6 u32 match u32 0 0 \
+                action mirred egress redirect dev ifb0 2>/dev/null || true
+        fi
+    done
 
     # ifb0 上建与出向对称的 HTB 树，default 指向 100gbit 兜底类（未限速端口直通）
     if ! tc qdisc show dev ifb0 2>/dev/null | grep -q "qdisc htb 1:"; then
@@ -1928,7 +1941,10 @@ apply_ingress_shaping() {
     remove_ingress_filters "$port"
     tc qdisc del dev ifb0 parent $class_id 2>/dev/null || true
     tc class del dev ifb0 classid $class_id 2>/dev/null || true
-    if ! tc class add dev ifb0 parent 1:1 classid $class_id htb rate $total_limit ceil $total_limit 2>/dev/null; then
+    # 与出向同规格的 burst：入向类原来没设，默认值在低速率下突发余量不足
+    local burst_bytes=$(calculate_tc_burst "$(parse_tc_rate_to_kbps "$total_limit")")
+    local burst_size=$(format_tc_burst "$burst_bytes")
+    if ! tc class add dev ifb0 parent 1:1 classid $class_id htb rate $total_limit ceil $total_limit burst $burst_size 2>/dev/null; then
         log_notification "创建入向限速类 $class_id 失败 (端口 $port)"
         return 1
     fi
@@ -1938,6 +1954,7 @@ apply_ingress_shaping() {
     if is_port_range "$port"; then
         local mark_id=$(generate_port_range_mark "$port")
         tc filter add dev ifb0 protocol ip parent 1:0 prio 1 handle $mark_id fw flowid $class_id 2>/dev/null || true
+        tc filter add dev ifb0 protocol ipv6 parent 1:0 prio 2 handle $mark_id fw flowid $class_id 2>/dev/null || true
     else
         local filter_prio=$((port % 1000 + 1))
         tc filter add dev ifb0 protocol ip parent 1:0 prio $filter_prio u32 \
@@ -1948,6 +1965,15 @@ apply_ingress_shaping() {
             match ip protocol 17 0xff match ip dport $port 0xffff flowid $class_id 2>/dev/null || true
         tc filter add dev ifb0 protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
             match ip protocol 17 0xff match ip sport $port 0xffff flowid $class_id 2>/dev/null || true
+        # IPv6 已随 redirect 进入 ifb0，端口匹配也要有 v6 变体，否则回落 default 类不限速
+        tc filter add dev ifb0 protocol ipv6 parent 1:0 prio $((filter_prio + 2000)) u32 \
+            match u8 6 0xff at 6 match u16 $port 0xffff at 42 flowid $class_id 2>/dev/null || true
+        tc filter add dev ifb0 protocol ipv6 parent 1:0 prio $((filter_prio + 2000)) u32 \
+            match u8 6 0xff at 6 match u16 $port 0xffff at 40 flowid $class_id 2>/dev/null || true
+        tc filter add dev ifb0 protocol ipv6 parent 1:0 prio $((filter_prio + 3000)) u32 \
+            match u8 17 0xff at 6 match u16 $port 0xffff at 42 flowid $class_id 2>/dev/null || true
+        tc filter add dev ifb0 protocol ipv6 parent 1:0 prio $((filter_prio + 3000)) u32 \
+            match u8 17 0xff at 6 match u16 $port 0xffff at 40 flowid $class_id 2>/dev/null || true
     fi
     return 0
 }
@@ -1961,6 +1987,8 @@ remove_ingress_filters() {
         local mark_hex=$(printf '0x%x' "$mark_id")
         tc filter del dev ifb0 protocol ip parent 1:0 prio 1 handle $mark_hex fw 2>/dev/null || true
         tc filter del dev ifb0 protocol ip parent 1:0 prio 1 handle $mark_id fw 2>/dev/null || true
+        tc filter del dev ifb0 protocol ipv6 parent 1:0 prio 2 handle $mark_hex fw 2>/dev/null || true
+        tc filter del dev ifb0 protocol ipv6 parent 1:0 prio 2 handle $mark_id fw 2>/dev/null || true
     else
         local filter_prio=$((port % 1000 + 1))
         tc filter del dev ifb0 protocol ip parent 1:0 prio $filter_prio u32 \
@@ -1971,13 +1999,20 @@ remove_ingress_filters() {
             match ip protocol 17 0xff match ip dport $port 0xffff 2>/dev/null || true
         tc filter del dev ifb0 protocol ip parent 1:0 prio $((filter_prio + 1000)) u32 \
             match ip protocol 17 0xff match ip sport $port 0xffff 2>/dev/null || true
+        tc filter del dev ifb0 protocol ipv6 parent 1:0 prio $((filter_prio + 2000)) u32 \
+            match u8 6 0xff at 6 match u16 $port 0xffff at 42 2>/dev/null || true
+        tc filter del dev ifb0 protocol ipv6 parent 1:0 prio $((filter_prio + 2000)) u32 \
+            match u8 6 0xff at 6 match u16 $port 0xffff at 40 2>/dev/null || true
+        tc filter del dev ifb0 protocol ipv6 parent 1:0 prio $((filter_prio + 3000)) u32 \
+            match u8 17 0xff at 6 match u16 $port 0xffff at 42 2>/dev/null || true
+        tc filter del dev ifb0 protocol ipv6 parent 1:0 prio $((filter_prio + 3000)) u32 \
+            match u8 17 0xff at 6 match u16 $port 0xffff at 40 2>/dev/null || true
     fi
 }
 
 # 拆除入向限速链路：filter → leaf → class；所有端口都拆完后连同 ifb0 和 ingress 一起清理
 remove_ingress_shaping() {
     local port=$1
-    local interface=$(get_default_interface)
 
     if ! ip link show ifb0 >/dev/null 2>&1; then
         return 0
@@ -1988,10 +2023,13 @@ remove_ingress_shaping() {
     tc qdisc del dev ifb0 parent $class_id 2>/dev/null || true
     tc class del dev ifb0 classid $class_id 2>/dev/null || true
 
-    # ifb0 上已无限速类：整条链路拆除
+    # ifb0 上已无限速类：整条链路拆除（所有装过 ingress 的网卡一起清）
     if [ "$(tc class show dev ifb0 2>/dev/null | grep -c "parent 1:1")" -eq 0 ]; then
+        local dev
+        for dev in $(list_shaping_interfaces); do
+            tc qdisc del dev $dev ingress 2>/dev/null || true
+        done
         tc qdisc del dev ifb0 root 2>/dev/null || true
-        tc qdisc del dev $interface ingress 2>/dev/null || true
         ip link set ifb0 down 2>/dev/null || true
         ip link del ifb0 2>/dev/null || true
     fi
@@ -2000,19 +2038,26 @@ remove_ingress_shaping() {
 # 删除TC带宽限制
 remove_tc_limit() {
     local port=$1
-    local interface=$(get_default_interface)
 
     local class_id=$(generate_tc_class_id "$port")
 
     remove_egress_filters "$port"
-    tc qdisc del dev $interface parent $class_id 2>/dev/null || true
-    tc class del dev $interface classid $class_id 2>/dev/null || true
+    local dev remaining=0
+    for dev in $(list_shaping_interfaces); do
+        tc qdisc del dev $dev parent $class_id 2>/dev/null || true
+        tc class del dev $dev classid $class_id 2>/dev/null || true
+    done
 
     remove_ingress_shaping "$port"
 
-    # 该接口已无任何端口限速类时恢复默认根qdisc，避免残留htb
-    if [ "$(tc class show dev $interface 2>/dev/null | grep -c 'parent 1:1')" -eq 0 ]; then
-        tc qdisc del dev $interface root 2>/dev/null || true
+    # 所有网卡都没有剩余限速类时，把各网卡的 htb 根一并还原，避免残留
+    for dev in $(list_shaping_interfaces); do
+        remaining=$((remaining + $(tc class show dev $dev 2>/dev/null | grep -c "parent 1:1")))
+    done
+    if [ "$remaining" -eq 0 ]; then
+        for dev in $(list_shaping_interfaces); do
+            tc qdisc del dev $dev root 2>/dev/null || true
+        done
     fi
 }
 
