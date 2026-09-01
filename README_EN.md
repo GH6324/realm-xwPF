@@ -164,7 +164,7 @@ Select **1. Install & Configure**, then:
 - **Failover** — Automatic failure detection using native system tools, keeping things lightweight
 - **Rule Annotations** — Clear labeling for every rule — no more memorizing port mappings
 
-- **Port Traffic Dog** — Per-port traffic stats, rate limiting, throttling, with configurable notifications
+- **Port Traffic Dog** — Per-port and whole-server traffic stats (whole-server enabled by default), port/whole-server rate limiting, throttling, with configurable notifications
 - **Intuitive MPTCP Configuration** — Clean, visual MPTCP interface
 - **Network Link Testing** — Measure latency, bandwidth, stability, and large-packet routing (powered by hping3, iperf3, nexttrace, bgp.tools)
 
@@ -355,6 +355,7 @@ Port Traffic Dog (downloaded when selected)
 └── /etc/port-traffic-dog/
     ├── config.json                      # Monitoring configuration
     ├── traffic_data.json                # Traffic data backup
+    ├── vps_traffic.json                 # Whole-server traffic collection data
     ├── notifications/                   # Notification modules
     │   └── telegram.sh                  # Telegram notification module
     └── logs/                            # Log directory

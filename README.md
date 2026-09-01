@@ -4,7 +4,7 @@
 
 ---
 
-> 🚀 **网络转发管理脚本** - 同步官方 Realm 最新版全部功能，网络链路测试，端口流量犬，保持极简本质,可视化规则操作提高效率，纯脚本构建网络转发服务
+> 🚀 **网络转发管理脚本** - 同步官方 Realm 最新版全部功能，网络链路测试，端口流量狗，保持极简本质,可视化规则操作提高效率，纯脚本构建网络转发服务
 
 ## 脚本界面预览
 
@@ -15,7 +15,7 @@
 
 ![81ce7ea9e40068f6fda04b66ca3bd1ff.gif](https://i.mji.rip/2025/12/12/81ce7ea9e40068f6fda04b66ca3bd1ff.gif)
 
-### 端口流量犬
+### 端口流量狗
 
 ![cc59017896d277a8b35109ae44eac977.gif](https://i.mji.rip/2025/12/12/cc59017896d277a8b35109ae44eac977.gif)
 
@@ -164,7 +164,7 @@ bash /usr/local/bin/xwPF.sh
 - **故障转移** - 使用系统工具,完成自动故障检测,保持轻量化
 - **规则备注** - 清晰的备注功能,不再需要额外记忆
 
-- **端口流量犬** - 统计端口流量，控制端口限速，限流，可设置通知方式
+- **端口流量狗** - 统计端口与整机流量（整机默认开启），控制端口/整机限速，限流，可设置通知方式
 - **直观配置系统MPTCP** - 清晰的展示MPTCP界面
 - **网络链路脚本** - 测试链路延迟、带宽、稳定性,大包路由情况（基于hping3 & iperf3 & nexttrace & bgp.tools）
 
@@ -351,12 +351,13 @@ IP地址：MPTCP协议需要知道可以使用哪些IP地址建立子流
     ├── realm-health-check.service       # 健康检查服务
     └── realm-health-check.timer         # 健康检查定时器
 
-端口流量犬（选择端口流量犬时下载）
-├── /usr/local/bin/port-traffic-dog.sh   # 端口流量犬脚本
+端口流量狗（选择端口流量狗时下载）
+├── /usr/local/bin/port-traffic-dog.sh   # 端口流量狗脚本
 ├── /usr/local/bin/dog                   # 快捷启动命令
 └── /etc/port-traffic-dog/
     ├── config.json                      # 流量监控配置文件
     ├── traffic_data.json                # 流量数据备份
+    ├── vps_traffic.json                 # 整机流量采集数据
     ├── notifications/                   # 通知模块目录
     │   └── telegram.sh                  # Telegram通知模块
     └── logs/                            # 日志目录

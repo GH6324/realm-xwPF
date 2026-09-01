@@ -2,13 +2,17 @@
 
 set -euo pipefail
 
-readonly SCRIPT_VERSION="1.2.9"
+readonly SCRIPT_VERSION="1.3.0"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
 readonly CONFIG_FILE="$CONFIG_DIR/config.json"
 readonly LOG_FILE="$CONFIG_DIR/logs/traffic.log"
 readonly TRAFFIC_DATA_FILE="$CONFIG_DIR/traffic_data.json"
+# 整机流量伪端口：配置完全融入端口体系(配额/统计方式/重置走同一路径)，
+# 唯一差异是计数源——/proc/net/dev 按网卡增量累加，无 nftables 规则
+readonly VPS_PORT_ID="00"
+readonly VPS_DATA_FILE="$CONFIG_DIR/vps_traffic.json"
 
 readonly RED='\033[0;31m'
 readonly YELLOW='\033[0;33m'
@@ -191,13 +195,62 @@ EOF
     fi
 
     setup_exit_hooks
+    # 整机流量默认开启：幂等补建伪端口配置与采集 cron（全新安装即有，老版本升级自动迁移）
+    ensure_vps_port_config
     # 与 cron 推送路径共用带锁的自愈入口，避免交互恢复和定时恢复并发把规则加双份
     ensure_monitoring_state
+}
+
+# 幂等创建整机流量伪端口条目与采集定时任务；已有配置不覆盖用户设置
+ensure_vps_port_config() {
+    if ! jq -e --arg vps "$VPS_PORT_ID" '.ports[$vps]' "$CONFIG_FILE" >/dev/null 2>&1; then
+        update_config --arg vps "$VPS_PORT_ID" --arg now "$(get_beijing_time -Iseconds)" \
+            '.ports[$vps] = {
+                "name": "整机流量",
+                "enabled": true,
+                "billing_mode": "double",
+                "bandwidth_limit": {"enabled": false, "rate": "unlimited"},
+                "quota": {"enabled": true, "monthly_limit": "unlimited"},
+                "remark": "",
+                "created_at": $now
+            }'
+        log_notification "整机流量监控已启用"
+    fi
+    setup_vps_collect_cron
+}
+
+# 每分钟采集 cron：增量统计的窗口粒度，掉一条 cron 最多丢一分钟流量
+setup_vps_collect_cron() {
+    local temp_cron=$(mktemp)
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗整机流量采集" > "$temp_cron" || true
+    echo "* * * * * $SCRIPT_PATH --collect-vps-traffic >/dev/null 2>&1  # 端口流量狗整机流量采集" >> "$temp_cron"
+    crontab "$temp_cron"
+    rm -f "$temp_cron"
+}
+
+remove_vps_collect_cron() {
+    local temp_cron=$(mktemp)
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗整机流量采集" > "$temp_cron" || true
+    crontab "$temp_cron"
+    rm -f "$temp_cron"
 }
 
 init_nftables() {
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
+
+    NFT_TABLE_CACHE=""
+    # 推送/自愈路径每轮都进这里：表和三链都在位时直接返回，省掉 4 次注定失败的 nft add
+    local existing
+    existing=$(nft list table $family $table_name 2>/dev/null || true)
+    if [ -n "$existing" ] \
+        && grep -q "^[[:space:]]*chain input {" <<< "$existing" \
+        && grep -q "^[[:space:]]*chain output {" <<< "$existing" \
+        && grep -q "^[[:space:]]*chain forward {" <<< "$existing"; then
+        NFT_TABLE_CACHE="$existing"
+        return 0
+    fi
+
     # 使用inet family支持IPv4/IPv6双栈
     nft add table $family $table_name 2>/dev/null || true
     nft add chain $family $table_name input { type filter hook input priority 0\; } 2>/dev/null || true
@@ -232,12 +285,30 @@ get_beijing_time() {
 }
 
 update_config() {
-    local jq_expression="$1"
-    jq "$jq_expression" "$CONFIG_FILE" > "${CONFIG_FILE}.tmp"
+    # 支持直接传 jq 表达式，或先传 jq 参数(--arg/--argjson...)再传表达式
+    if [ "$1" = "--arg" ] || [ "$1" = "--argjson" ]; then
+        local jq_args=("$@")
+        local jq_expression="${jq_args[${#jq_args[@]}-1]}"
+        unset "jq_args[$(( ${#jq_args[@]} - 1 ))]"
+        jq "${jq_args[@]}" "$jq_expression" "$CONFIG_FILE" > "${CONFIG_FILE}.tmp"
+    else
+        jq "$1" "$CONFIG_FILE" > "${CONFIG_FILE}.tmp"
+    fi
     mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
 }
 
+# 端口展示名：伪端口 00 显示为整机流量，其余保持「端口 N」
+get_port_display_name() {
+    local port=$1
+    if [ "$port" = "$VPS_PORT_ID" ]; then
+        echo "整机流量"
+    else
+        echo "端口 $port"
+    fi
+}
+
 show_port_list() {
+    # 设置类菜单（配额/限速/统计方式/重置）包含整机流量；删除菜单单独用过滤列表
     local active_ports=($(get_active_ports))
     if [ ${#active_ports[@]} -eq 0 ]; then
         echo "暂无监控端口"
@@ -248,7 +319,7 @@ show_port_list() {
     for i in "${!active_ports[@]}"; do
         local port=${active_ports[$i]}
         local status_label=$(get_port_status_label "$port")
-        echo "$((i+1)). 端口 $port $status_label"
+        echo "$((i+1)). $(get_port_display_name "$port") $status_label"
     done
     return 0
 }
@@ -346,34 +417,80 @@ get_beijing_month_year() {
     echo "$current_day $current_month $current_year"
 }
 
+# nft 全表快照缓存：一次 `nft list table` 喂给本轮所有读操作（计数器值/存在性/规则引用），
+# 内核在此期间自行累加，快照内各读点数值一致反而是更好的一致性。
+# 任何 nft 写操作后必须把 NFT_TABLE_CACHE 清空（写方负责），MISSING 是"表不存在"哨兵，
+# 避免表不存在时每个端口重复 spawn。读函数运行在 $() 子壳里也没问题：各子壳各自惰性拉取
+get_nft_table_dump() {
+    if [ -z "${NFT_TABLE_CACHE:-}" ]; then
+        local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
+        local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
+        NFT_TABLE_CACHE=$(nft list table $family $table_name 2>/dev/null || true)
+        [ -z "$NFT_TABLE_CACHE" ] && NFT_TABLE_CACHE="MISSING"
+    fi
+    [ "$NFT_TABLE_CACHE" != "MISSING" ]
+}
+
+# 计数器对象是否已存在（基于表快照判断；表不在则视为不存在）
+nft_counter_exists() {
+    get_nft_table_dump || return 1
+    grep -q "^[[:space:]]*counter $1 {" <<< "$NFT_TABLE_CACHE"
+}
+
 get_nftables_counter_data() {
     local port=$1
-    local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
-    local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
     local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
 
     local input_bytes=0
     local output_bytes=0
 
-    if is_port_range "$port"; then
-        local port_safe=$(echo "$port" | tr '-' '_')
+    if [ "$port" = "$VPS_PORT_ID" ]; then
+        # 整机伪端口：读 /proc/net/dev 增量累计的 monthly 原始值，按计费口径预乘，
+        # 使下游 calculate_total_traffic 等端口逻辑零改动复用（双向=in 2x/out 2x，单向=out 1x）
+        local vps_raw=($(get_vps_monthly_raw))
+        local vps_rx=${vps_raw[0]:-0}
+        local vps_tx=${vps_raw[1]:-0}
         if [ "$billing_mode" = "double" ]; then
-            input_bytes=$(nft list counter $family $table_name "port_${port_safe}_in" 2>/dev/null | \
-                grep -o 'bytes [0-9]*' | awk '{print $2}' || true)
+            input_bytes=$((vps_rx * 2))
+            output_bytes=$((vps_tx * 2))
+        else
+            input_bytes=0
+            output_bytes=$vps_tx
         fi
-        output_bytes=$(nft list counter $family $table_name "port_${port_safe}_out" 2>/dev/null | \
-            grep -o 'bytes [0-9]*' | awk '{print $2}' || true)
-    else
-        if [ "$billing_mode" = "double" ]; then
-            input_bytes=$(nft list counter $family $table_name "port_${port}_in" 2>/dev/null | \
-                grep -o 'bytes [0-9]*' | awk '{print $2}' || true)
-        fi
-        output_bytes=$(nft list counter $family $table_name "port_${port}_out" 2>/dev/null | \
-            grep -o 'bytes [0-9]*' | awk '{print $2}' || true)
+        echo "$input_bytes $output_bytes"
+        return 0
     fi
 
-    input_bytes=${input_bytes:-0}
-    output_bytes=${output_bytes:-0}
+    local port_safe=$port
+    is_port_range "$port" && port_safe=$(echo "$port" | tr '-' '_')
+
+    # 一次 awk 从表快照解析两个计数器，兼容两种渲染：
+    # nft≥1.0.x 单行 "packets N bytes M"（值在 $4），旧版分行 "bytes N bytes"（值在 $2）。
+    # quota 块行首是 over/used，不会被误匹配。缺失计数器按 0，与旧逐个 nft list 语义一致
+    if get_nft_table_dump; then
+        local parsed
+        parsed=$(printf '%s\n' "$NFT_TABLE_CACHE" | awk -v in_name="port_${port_safe}_in" -v out_name="port_${port_safe}_out" '
+            $1 == "counter" { cur = $2; next }
+            $1 == "quota" || $1 == "chain" || $1 == "table" || $1 == "set" || $1 == "map" { cur = ""; next }
+            $1 == "}" { cur = ""; next }
+            $1 == "packets" && $3 == "bytes" {
+                if (cur == in_name) ib = $4
+                else if (cur == out_name) ob = $4
+                next
+            }
+            $1 == "bytes" && $3 == "bytes" {
+                if (cur == in_name) ib = $2
+                else if (cur == out_name) ob = $2
+            }
+            END {
+                # 字符串透传，禁止数值化：print ib+0 会按 %.6g 输出科学计数法
+                print (ib == "" ? 0 : ib), (ob == "" ? 0 : ob)
+            }')
+        read -r input_bytes output_bytes <<< "$parsed"
+    fi
+
+    # 单向口径与旧实现一致：不返回 in 计数器（单向模式下该计数器通常也不存在）
+    [ "$billing_mode" != "double" ] && input_bytes=0
     echo "$input_bytes $output_bytes"
 }
 
@@ -383,8 +500,15 @@ save_traffic_data() {
     local temp_file=$(mktemp)
     local active_ports=($(get_active_ports 2>/dev/null || true))
 
-    # 无监控端口时清掉陈旧备份，避免开机把已删端口/旧值恢复回来
-    if [ ${#active_ports[@]} -eq 0 ]; then
+    # 整机流量走独立的 vps_traffic.json 生命周期（常驻，不随退出备份/恢复），
+    # 这里跳过 00，避免往 nft 备份里写一条永远恢复不出计数器的假端口
+    local ports_for_backup=()
+    for port in "${active_ports[@]}"; do
+        [ "$port" = "$VPS_PORT_ID" ] && continue
+        ports_for_backup+=("$port")
+    done
+
+    if [ ${#ports_for_backup[@]} -eq 0 ]; then
         rm -f "$TRAFFIC_DATA_FILE"
         rm -f "$temp_file"
         return 0
@@ -392,7 +516,7 @@ save_traffic_data() {
 
     echo '{}' > "$temp_file"
 
-    for port in "${active_ports[@]}"; do
+    for port in "${ports_for_backup[@]}"; do
         local traffic_data=($(get_nftables_counter_data "$port"))
         local current_input=${traffic_data[0]}
         local current_output=${traffic_data[1]}
@@ -421,29 +545,39 @@ save_traffic_data_on_exit() {
 restore_monitoring_if_needed() {
     local active_ports=($(get_active_ports 2>/dev/null || true))
 
-    if [ ${#active_ports[@]} -eq 0 ]; then
+    # 只检查真实端口：00 的恢复检查判据永远为假，混进来会导致每次都触发全量规则重建
+    local real_ports=()
+    for port in "${active_ports[@]}"; do
+        [ "$port" = "$VPS_PORT_ID" ] && continue
+        real_ports+=("$port")
+    done
+
+    if [ ${#real_ports[@]} -eq 0 ]; then
         return 0
     fi
 
-    # 检查计数器与规则是否都在：规则被单独清掉（计数器还在）时计数会静默停止
-    local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
-    local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
+    # 检查计数器与规则是否都在：规则被单独清掉（计数器还在）时计数会静默停止。
+    # 全部判据取自一次表快照（0 额外 spawn），表整体不在时视为全部丢失
     local need_restore=false
+    if ! get_nft_table_dump; then
+        need_restore=true
+    else
+        local port out_name
+        for port in "${real_ports[@]}"; do
+            if is_port_range "$port"; then
+                local port_safe=$(echo "$port" | tr '-' '_')
+                out_name="port_${port_safe}_out"
+            else
+                out_name="port_${port}_out"
+            fi
 
-    for port in "${active_ports[@]}"; do
-        if is_port_range "$port"; then
-            local port_safe=$(echo "$port" | tr '-' '_')
-            local out_name="port_${port_safe}_out"
-        else
-            local out_name="port_${port}_out"
-        fi
-
-        if ! nft list counter $family $table_name "$out_name" >/dev/null 2>&1 \
-            || ! nft list chain $family $table_name output 2>/dev/null | grep -q "counter name \"$out_name\""; then
-            need_restore=true
-            break
-        fi
-    done
+            if ! grep -q "^[[:space:]]*counter $out_name {" <<< "$NFT_TABLE_CACHE" \
+                || ! grep -q "counter name \"$out_name\"" <<< "$NFT_TABLE_CACHE"; then
+                need_restore=true
+                break
+            fi
+        done
+    fi
 
     if [ "$need_restore" = "true" ]; then
         restore_traffic_data_from_backup
@@ -461,7 +595,8 @@ restore_traffic_data_from_backup() {
     local backup_ports=($(jq -r 'keys[]' "$TRAFFIC_DATA_FILE" 2>/dev/null || true))
 
     for port in "${backup_ports[@]}"; do
-        # 配置里已删除的端口不恢复，避免留孤儿计数器
+        # 配置里已删除的端口不恢复，避免留孤儿计数器；00 无 nft 计数器不参与
+        [ "$port" = "$VPS_PORT_ID" ] && continue
         jq -e ".ports.\"$port\"" "$CONFIG_FILE" >/dev/null 2>&1 || continue
 
         local backup_input=$(jq -r ".\"$port\".input // 0" "$TRAFFIC_DATA_FILE" 2>/dev/null || echo "0")
@@ -480,6 +615,11 @@ restore_counter_value() {
     local port=$1
     local target_input=$2
     local target_output=$3
+
+    # 整机伪端口无计数器，数据常驻 vps_traffic.json 无需恢复
+    [ "$port" = "$VPS_PORT_ID" ] && return 0
+
+    NFT_TABLE_CACHE=""
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
     local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
@@ -496,12 +636,12 @@ restore_counter_value() {
     # 计数器还在就保留内核里的实时值（比备份新）；缺失才用备份值重建。
     # 语法用无花括号形式：nftables 0.9.3(Ubuntu 20.04) 不认带花括号的初值写法
     if [ "$billing_mode" = "double" ]; then
-        if ! nft list counter $family $table_name "$in_name" >/dev/null 2>&1 \
+        if ! nft_counter_exists "$in_name" \
             && ! nft add counter $family $table_name "$in_name" packets 0 bytes $target_input 2>/dev/null; then
             log_notification "恢复计数器 $in_name 失败 (端口 $port)"
         fi
     fi
-    if ! nft list counter $family $table_name "$out_name" >/dev/null 2>&1 \
+    if ! nft_counter_exists "$out_name" \
         && ! nft add counter $family $table_name "$out_name" packets 0 bytes $target_output 2>/dev/null; then
         log_notification "恢复计数器 $out_name 失败 (端口 $port)"
     fi
@@ -511,6 +651,20 @@ restore_all_monitoring_rules() {
     local active_ports=($(get_active_ports))
 
     for port in "${active_ports[@]}"; do
+        # 整机流量无 nftables 规则/配额，只恢复限速与重置 cron
+        if [ "$port" = "$VPS_PORT_ID" ]; then
+            local vps_limit_enabled=$(jq -r ".ports.\"$port\".bandwidth_limit.enabled // false" "$CONFIG_FILE")
+            local vps_rate_limit=$(jq -r ".ports.\"$port\".bandwidth_limit.rate // \"unlimited\"" "$CONFIG_FILE")
+            if [ "$vps_limit_enabled" = "true" ] && [ "$vps_rate_limit" != "unlimited" ]; then
+                local vps_tc_limit=$(convert_bandwidth_to_tc "$vps_rate_limit")
+                if [ -n "$vps_tc_limit" ]; then
+                    apply_tc_limit "$port" "$vps_tc_limit" || true
+                fi
+            fi
+            setup_port_auto_reset_cron "$port"
+            continue
+        fi
+
         add_nftables_rules "$port"
 
         # 恢复配额限制
@@ -555,13 +709,29 @@ get_port_status_label() {
     local port=$1
     local port_config=$(jq -r ".ports.\"$port\"" "$CONFIG_FILE" 2>/dev/null)
 
-    local remark=$(echo "$port_config" | jq -r '.remark // ""')
-    local billing_mode=$(echo "$port_config" | jq -r '.billing_mode // "double"')
-    local limit_enabled=$(echo "$port_config" | jq -r '.bandwidth_limit.enabled // false')
-    local rate_limit=$(echo "$port_config" | jq -r '.bandwidth_limit.rate // "unlimited"')
-    local quota_enabled=$(echo "$port_config" | jq -r '.quota.enabled // true')
-    local monthly_limit=$(echo "$port_config" | jq -r '.quota.monthly_limit // "unlimited"')
-    local reset_day_raw=$(echo "$port_config" | jq -r '.quota.reset_day')
+    # 一次 @tsv 取齐全部字段（null 端口行 jq 会输出全默认值行），替代逐字段 8 次 jq。
+    # tab 是 IFS 空白：read 会合并连续 tab、吞掉空字段——remark 是唯一可为空的字段，
+    # 空时放 0x01 占位、读回后还原。reset_day 缺失/null 统一为 "null"，与原逐字段语义一致
+    local fields
+    fields=$(printf '%s' "$port_config" | jq -r '[
+        "S",
+        (.remark // "" | if . == "" then "\u0001" else . end),
+        .billing_mode // "double",
+        (.bandwidth_limit.enabled // false),
+        .bandwidth_limit.rate // "unlimited",
+        (.quota.enabled // true),
+        .quota.monthly_limit // "unlimited",
+        (.quota.reset_day // "null")
+    ] | @tsv' 2>/dev/null) || fields=""
+
+    local remark billing_mode limit_enabled rate_limit quota_enabled monthly_limit reset_day_raw
+    if [ -n "$fields" ]; then
+        IFS=$'\t' read -r _sentinel remark billing_mode limit_enabled rate_limit quota_enabled monthly_limit reset_day_raw <<< "$fields"
+        [ "$remark" = $'\x01' ] && remark=""
+    else
+        remark=""; billing_mode="double"; limit_enabled="false"
+        rate_limit="unlimited"; quota_enabled="true"; monthly_limit="unlimited"; reset_day_raw="null"
+    fi
     local reset_day="null"
     
     # 有流量限额时，获取重置日期（null表示用户取消了自动重置）
@@ -579,10 +749,6 @@ get_port_status_label() {
         if [ "$monthly_limit" != "unlimited" ]; then
             local current_usage=$(get_port_monthly_usage "$port")
             local limit_bytes=$(parse_size_to_bytes "$monthly_limit")
-            local usage_percent=0
-            if [ -n "$limit_bytes" ] && [ "$limit_bytes" -gt 0 ]; then
-                usage_percent=$((current_usage * 100 / limit_bytes))
-            fi
 
             local quota_display="$monthly_limit"
             if [ "$billing_mode" = "double" ]; then
@@ -590,7 +756,7 @@ get_port_status_label() {
             else
                 status_tags+=("[单向${quota_display}]")
             fi
-            
+
             # 只有配置了reset_day时才显示重置日期信息
             if [ "$reset_day" != "null" ]; then
                 local time_info=($(get_beijing_month_year))
@@ -604,11 +770,11 @@ get_port_status_label() {
                         next_month=1
                     fi
                 fi
-                
+
                 status_tags+=("[${next_month}月${reset_day}日重置]")
             fi
 
-            if [ $usage_percent -ge 100 ]; then
+            if [ -n "$limit_bytes" ] && [ "$limit_bytes" -gt 0 ] && [ "$current_usage" -ge "$limit_bytes" ]; then
                 status_tags+=("[已超限]")
             fi
         else
@@ -684,6 +850,142 @@ parse_size_to_bytes() {
 
 get_active_ports() {
     jq -r '.ports | keys[]' "$CONFIG_FILE" 2>/dev/null | sort -n
+}
+
+# 排除整机伪端口后的真实端口列表：header 计数、端口总流量、删除菜单都用它
+get_monitored_ports() {
+    jq -r --arg vps "$VPS_PORT_ID" '.ports | keys[] | select(. != $vps)' "$CONFIG_FILE" 2>/dev/null | sort -n
+}
+
+# 整机流量监控的网卡集合：与限速同一排除列表，再排除 ifb——
+# ifb 是入向限速的镜像设备，计数器与物理网卡重复，计入会把入向流量算成两倍
+# 物理网卡计数天然已含容器/隧道流量（最终都从物理口出去），逐网卡独立计数，不做聚合求和
+list_vps_interfaces() {
+    list_shaping_interfaces | grep -v "^ifb" || true
+}
+
+vps_lock() {
+    mkdir -p "$CONFIG_DIR"
+    exec 8>"$CONFIG_DIR/.vps.lock"
+    flock 8
+}
+
+vps_unlock() {
+    flock -u 8 2>/dev/null || true
+    exec 8>&- 2>/dev/null || true
+}
+
+vps_read_data() {
+    cat "$VPS_DATA_FILE" 2>/dev/null || echo '{}'
+}
+
+# 原子写回整机流量数据（mktemp + mv，与 save_traffic_data 同模式）
+vps_write_data() {
+    local data="$1"
+    local temp_file=$(mktemp)
+    printf '%s' "$data" > "$temp_file"
+    mv "$temp_file" "$VPS_DATA_FILE"
+}
+
+# 单网卡采集一次原始计数；网卡消失返回空
+vps_read_iface_raw() {
+    local iface=$1
+    awk -v dev="$iface:" '$1 == dev {print $2, $10}' /proc/net/dev 2>/dev/null
+}
+
+# 采集引擎：读全部监控网卡 → 按网卡算 delta → 累加进 monthly。
+# lifetime_raw 永不清零（delta 基准），monthly 随重置日清零，二者严格分离。
+# 校验优先级：文件不存在(首次,只落基准) > boot_id 变化(重启,current即delta) > 计数回退(NIC重建) > 正常增量
+collect_vps_traffic() {
+    # cron 每分钟跑一次，全新机器 jq 可能尚未安装：静默跳过，等交互初始化补装
+    command -v jq >/dev/null 2>&1 || return 0
+
+    local ifaces=($(list_vps_interfaces 2>/dev/null || true))
+    if [ ${#ifaces[@]} -eq 0 ]; then
+        return 0
+    fi
+
+    local current_boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo "unknown")
+    local now=$(get_beijing_time +%s)
+
+    vps_lock
+
+    local data=$(vps_read_data)
+    local last_boot_id=$(printf '%s' "$data" | jq -r '.lifetime_raw.boot_id // ""' 2>/dev/null || echo "")
+    local file_exists=false
+    [ -f "$VPS_DATA_FILE" ] && file_exists=true
+
+    local new_data="$data"
+    local iface raw_line current_rx current_tx last_rx last_tx delta_rx delta_tx
+
+    for iface in "${ifaces[@]}"; do
+        raw_line=$(vps_read_iface_raw "$iface")
+        # 网卡此刻消失（热插拔中）：跳过，不动它的基准与月度数据
+        [ -z "$raw_line" ] && continue
+
+        current_rx=$(echo "$raw_line" | awk '{print $1}')
+        current_tx=$(echo "$raw_line" | awk '{print $2}')
+        [[ "$current_rx" =~ ^[0-9]+$ ]] || continue
+        [[ "$current_tx" =~ ^[0-9]+$ ]] || continue
+
+        last_rx=$(printf '%s' "$new_data" | jq -r --arg i "$iface" '.lifetime_raw.ifaces[$i].rx_bytes // 0' 2>/dev/null || echo 0)
+        last_tx=$(printf '%s' "$new_data" | jq -r --arg i "$iface" '.lifetime_raw.ifaces[$i].tx_bytes // 0' 2>/dev/null || echo 0)
+
+        if [ "$file_exists" = "false" ]; then
+            # 首次采集：只落基准，历史流量不计入（从启用当刻起算）
+            delta_rx=0
+            delta_tx=0
+        elif [ "$last_boot_id" != "$current_boot_id" ]; then
+            # 文件在但内核变了 = 宿主机重启：开机以来的计数全部计入本月
+            delta_rx=$current_rx
+            delta_tx=$current_tx
+        elif [ "$current_rx" -lt "$last_rx" ] || [ "$current_tx" -lt "$last_tx" ]; then
+            # 未重启但计数回退：网卡被重建/重置（云厂商NIC重建等），按当前值校准并留痕
+            log_notification "整机流量：网卡 $iface 计数器未重启发生回退（疑似NIC重建），已按当前值校准"
+            delta_rx=$current_rx
+            delta_tx=$current_tx
+        else
+            delta_rx=$((current_rx - last_rx))
+            delta_tx=$((current_tx - last_tx))
+        fi
+
+        new_data=$(printf '%s' "$new_data" | jq -c --arg i "$iface" \
+            --argjson lrx "$current_rx" --argjson ltx "$current_tx" \
+            --argjson drx "$delta_rx" --argjson dtx "$delta_tx" '
+            .lifetime_raw.ifaces[$i] = {"rx_bytes": $lrx, "tx_bytes": $ltx} |
+            .monthly.ifaces[$i] = ((.monthly.ifaces[$i] // {"rx_bytes": 0, "tx_bytes": 0}) |
+                .rx_bytes += $drx | .tx_bytes += $dtx)' 2>/dev/null) || new_data="$data"
+    done
+
+    new_data=$(printf '%s' "$new_data" | jq -c --arg boot "$current_boot_id" --argjson now "$now" '
+        .lifetime_raw.boot_id = $boot |
+        .lifetime_raw.updated_at = $now |
+        .monthly.reset_at = (.monthly.reset_at // $now)' 2>/dev/null) || new_data=""
+
+    # jq 全程成功才落盘：失败宁可不写也不写坏数据（读端走原子mv不会读到半截）
+    if [ -n "$new_data" ]; then
+        vps_write_data "$new_data"
+    else
+        log_notification "整机流量：增量计算失败，本轮数据未落盘"
+    fi
+
+    vps_unlock
+}
+
+# 整机月度合计（原始 rx/tx，未乘计费倍率）：返回 "rx tx"
+get_vps_monthly_raw() {
+    local data=$(vps_read_data)
+    local total_rx=$(printf '%s' "$data" | jq -r '[.monthly.ifaces[]?.rx_bytes] | add // 0' 2>/dev/null || echo 0)
+    local total_tx=$(printf '%s' "$data" | jq -r '[.monthly.ifaces[]?.tx_bytes] | add // 0' 2>/dev/null || echo 0)
+    [[ "$total_rx" =~ ^[0-9]+$ ]] || total_rx=0
+    [[ "$total_tx" =~ ^[0-9]+$ ]] || total_tx=0
+    echo "$total_rx $total_tx"
+}
+
+# 整机在用网卡名列表（展示用）
+get_vps_interface_names() {
+    local data=$(vps_read_data)
+    printf '%s' "$data" | jq -r '.monthly.ifaces // {} | keys[]' 2>/dev/null || true
 }
 
 is_port_range() {
@@ -775,7 +1077,7 @@ generate_tc_class_id() {
 
 get_daily_total_traffic() {
     local total_bytes=0
-    local ports=($(get_active_ports))
+    local ports=($(get_monitored_ports))
     for port in "${ports[@]}"; do
         local traffic_data=($(get_nftables_counter_data "$port"))
         local input_bytes=${traffic_data[0]}
@@ -787,9 +1089,58 @@ get_daily_total_traffic() {
     format_bytes $total_bytes
 }
 
+# 整机流量独立展示行（逐网卡一行，多网卡时 tag 相同——配额/统计方式是整机统一配置）。
+# 字段/分隔符/颜色与端口行逐项对齐，三格式同源生成
+format_vps_traffic_line() {
+    local format_type="$1"
+    local ifaces=($(get_vps_interface_names))
+    if [ ${#ifaces[@]} -eq 0 ]; then
+        return 0
+    fi
+
+    local billing_mode=$(jq -r ".ports.\"$VPS_PORT_ID\".billing_mode // \"double\"" "$CONFIG_FILE")
+    local status_label=$(get_port_status_label "$VPS_PORT_ID")
+    local data=$(vps_read_data)
+    local result=""
+
+    for iface in "${ifaces[@]}"; do
+        local m_rx=$(printf '%s' "$data" | jq -r --arg i "$iface" '.monthly.ifaces[$i].rx_bytes // 0' 2>/dev/null || echo 0)
+        local m_tx=$(printf '%s' "$data" | jq -r --arg i "$iface" '.monthly.ifaces[$i].tx_bytes // 0' 2>/dev/null || echo 0)
+        [[ "$m_rx" =~ ^[0-9]+$ ]] || m_rx=0
+        [[ "$m_tx" =~ ^[0-9]+$ ]] || m_tx=0
+
+        # 与端口行同口径：按整机计费模式预乘后展示
+        local input_bytes=0
+        local output_bytes=0
+        if [ "$billing_mode" = "double" ]; then
+            input_bytes=$((m_rx * 2))
+            output_bytes=$((m_tx * 2))
+        else
+            output_bytes=$m_tx
+        fi
+        local total_bytes=$(calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode")
+        local total_formatted=$(format_bytes $total_bytes)
+        local input_formatted=$(format_bytes $input_bytes)
+        local output_formatted=$(format_bytes $output_bytes)
+
+        if [ "$format_type" = "display" ]; then
+            result+="整机总流量:${GREEN}${iface}${NC} | 总流量:${GREEN}$total_formatted${NC} | 上行(入站): ${GREEN}$input_formatted${NC} | 下行(出站):${GREEN}$output_formatted${NC} | ${YELLOW}$status_label${NC}
+"
+        elif [ "$format_type" = "markdown" ]; then
+            result+="**整机总流量**:**${iface}** | **总流量**:**${total_formatted}** | **上行**:**${input_formatted}** | **下行**:**${output_formatted}** | ${status_label}
+"
+        else
+            result+="整机总流量:${iface} | 总流量:${total_formatted} | 上行(入站): ${input_formatted} | 下行(出站):${output_formatted} | ${status_label}
+"
+        fi
+    done
+
+    printf '%s' "$result"
+}
+
 format_port_list() {
     local format_type="$1"
-    local active_ports=($(get_active_ports))
+    local active_ports=($(get_monitored_ports))
     local result=""
 
     for port in "${active_ports[@]}"; do
@@ -825,15 +1176,20 @@ format_port_list() {
 show_main_menu() {
     clear
 
-    local active_ports=($(get_active_ports))
+    local active_ports=($(get_monitored_ports))
     local port_count=${#active_ports[@]}
     local daily_total=$(get_daily_total_traffic)
+    # 整机行先采集一次，显示的才是最新值
+    collect_vps_traffic
 
     echo -e "${BLUE}=== 端口流量狗 v$SCRIPT_VERSION ===${NC}"
     echo -e "${GREEN}介绍主页:${NC}https://zywe.de | ${GREEN}项目开源:${NC}https://github.com/zywe03/realm-xwPF"
     echo -e "${GREEN}一只轻巧的‘守护犬’，时刻守护你的端口流量 | 快捷命令: dog${NC}"
     echo
 
+    # 整机行含颜色码，必须经 echo -e 解释；多网卡逐行同显
+    local vps_lines=$(format_vps_traffic_line "display")
+    [ -n "$vps_lines" ] && echo -e "$vps_lines"
     echo -e "${GREEN}状态: 监控中${NC} | ${BLUE}守护端口: ${port_count}个${NC} | ${YELLOW}端口总流量: $daily_total${NC}"
     echo "────────────────────────────────────────────────────────"
 
@@ -1089,13 +1445,22 @@ remove_port_monitoring() {
     echo -e "${BLUE}=== 删除端口监控 ===${NC}"
     echo
 
-    local active_ports=($(get_active_ports))
+    # 整机流量为默认内置监控，不允许从删除菜单移除：列表与序号都用排除后的端口
+    local active_ports=($(get_monitored_ports))
 
-    if ! show_port_list; then
+    if [ ${#active_ports[@]} -eq 0 ]; then
+        echo "暂无可删除的监控端口"
         sleep 2
         manage_port_monitoring
         return
     fi
+
+    echo "当前监控的端口:"
+    for i in "${!active_ports[@]}"; do
+        local port=${active_ports[$i]}
+        local status_label=$(get_port_status_label "$port")
+        echo "$((i+1)). 端口 $port $status_label"
+    done
     echo
 
     read -p "请选择要删除的端口（多端口使用逗号,分隔）: " choice_input
@@ -1175,9 +1540,9 @@ remove_port_monitoring() {
         echo -e "${GREEN}网络状态已清理，现有连接的限制应该已解除${NC}"
         echo -e "${YELLOW}提示：新建连接将不受任何限制${NC}"
 
-        local remaining_ports=($(get_active_ports))
+        local remaining_ports=($(get_monitored_ports))
         if [ ${#remaining_ports[@]} -eq 0 ]; then
-            echo -e "${YELLOW}所有端口已删除，自动重置功能已停用${NC}"
+            echo -e "${YELLOW}所有端口已删除（整机流量监控保持开启），自动重置功能已停用${NC}"
         fi
     else
         echo "取消删除"
@@ -1189,6 +1554,11 @@ remove_port_monitoring() {
 
 add_nftables_rules() {
     local port=$1
+
+    # 整机伪端口无 nftables 规则（计数源是 /proc/net/dev）
+    [ "$port" = "$VPS_PORT_ID" ] && return 0
+
+    NFT_TABLE_CACHE=""
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
     local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
@@ -1202,9 +1572,9 @@ add_nftables_rules() {
 
         if [ "$billing_mode" = "double" ]; then
             # 双向模式：创建 in 和 out 两个计数器，各绑定规则两次（×2）
-            nft list counter $family $table_name "port_${port_safe}_in" >/dev/null 2>&1 || \
+            nft_counter_exists "port_${port_safe}_in" || \
                 nft add counter $family $table_name "port_${port_safe}_in" 2>/dev/null || true
-            nft list counter $family $table_name "port_${port_safe}_out" >/dev/null 2>&1 || \
+            nft_counter_exists "port_${port_safe}_out" || \
                 nft add counter $family $table_name "port_${port_safe}_out" 2>/dev/null || true
 
             # in 计数器：绑定 input 规则两次（in × 2）
@@ -1228,7 +1598,7 @@ add_nftables_rules() {
             nft add rule $family $table_name forward udp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
         else
             # 单向模式：只创建 out 计数器，绑定 output 规则一次（out × 1）
-            nft list counter $family $table_name "port_${port_safe}_out" >/dev/null 2>&1 || \
+            nft_counter_exists "port_${port_safe}_out" || \
                 nft add counter $family $table_name "port_${port_safe}_out" 2>/dev/null || true
 
             nft add rule $family $table_name output tcp sport $port meta mark set $mark_id counter name "port_${port_safe}_out"
@@ -1239,9 +1609,9 @@ add_nftables_rules() {
     else
         if [ "$billing_mode" = "double" ]; then
             # 双向模式：创建 in 和 out 两个计数器
-            nft list counter $family $table_name "port_${port}_in" >/dev/null 2>&1 || \
+            nft_counter_exists "port_${port}_in" || \
                 nft add counter $family $table_name "port_${port}_in" 2>/dev/null || true
-            nft list counter $family $table_name "port_${port}_out" >/dev/null 2>&1 || \
+            nft_counter_exists "port_${port}_out" || \
                 nft add counter $family $table_name "port_${port}_out" 2>/dev/null || true
 
             # in 计数器：绑定 input 规则两次（in × 2）
@@ -1265,7 +1635,7 @@ add_nftables_rules() {
             nft add rule $family $table_name forward udp sport $port counter name "port_${port}_out"
         else
             # 单向模式：只创建 out 计数器，绑定 output 规则一次（out × 1）
-            nft list counter $family $table_name "port_${port}_out" >/dev/null 2>&1 || \
+            nft_counter_exists "port_${port}_out" || \
                 nft add counter $family $table_name "port_${port}_out" 2>/dev/null || true
 
             nft add rule $family $table_name output tcp sport $port counter name "port_${port}_out"
@@ -1279,6 +1649,11 @@ add_nftables_rules() {
 # 按句柄删除匹配端口的监控/配额规则（不动计数器对象），供重加规则前清理旧规则用
 remove_port_rules_by_pattern() {
     local port=$1
+
+    # 整机伪端口无 nftables 规则
+    [ "$port" = "$VPS_PORT_ID" ] && return 0
+
+    NFT_TABLE_CACHE=""
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
 
@@ -1289,18 +1664,16 @@ remove_port_rules_by_pattern() {
         local search_pattern="port_${port}_"
     fi
 
-    # 使用handle删除法：逐个删除匹配的规则
+    # 使用handle删除法：句柄互不影响，一次全表列出所有匹配句柄再逐个删。
+    # 原实现每删一条就重新 dump 全表，双向模式 16 条规则/端口就是 16+ 次全表 dump
     local deleted_count=0
-    while true; do
-        local handle=$(nft -a list table $family $table_name 2>/dev/null | \
-            grep -E "(tcp|udp).*(dport|sport).*$search_pattern" | \
-            head -n1 | \
-            sed -n 's/.*# handle \([0-9]\+\)$/\1/p')
+    local handles=()
+    mapfile -t handles < <(nft -a list table $family $table_name 2>/dev/null | \
+        grep -E "(tcp|udp).*(dport|sport).*$search_pattern" | \
+        sed -n 's/.*# handle \([0-9]\+\)$/\1/p' || true)
 
-        if [ -z "$handle" ]; then
-            break
-        fi
-
+    local handle
+    for handle in "${handles[@]}"; do
         for chain in input output forward; do
             if nft delete rule $family $table_name $chain handle $handle 2>/dev/null; then
                 deleted_count=$((deleted_count + 1))
@@ -1316,6 +1689,11 @@ remove_port_rules_by_pattern() {
 
 remove_nftables_rules() {
     local port=$1
+
+    # 整机伪端口无 nftables 规则与计数器
+    [ "$port" = "$VPS_PORT_ID" ] && return 0
+
+    NFT_TABLE_CACHE=""
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
 
@@ -1364,8 +1742,11 @@ set_port_bandwidth_limit() {
     fi
 
     echo
-    local port_list=$(IFS=','; echo "${ports_to_limit[*]}")
-    echo "为端口 $port_list 设置带宽限制（速率控制）:"
+    local display_list
+    for port in "${ports_to_limit[@]}"; do
+        display_list="${display_list:+$display_list,}$(get_port_display_name "$port")"
+    done
+    echo "为 $display_list 设置带宽限制（速率控制）:"
     echo "请输入限制值（0为无限制）（要带单位Kbps/Mbps/Gbps）:"
     echo "(多端口排序分别限制使用逗号,分隔)(只输入一个值，应用到所有端口):"
     read -p "带宽限制: " limit_input
@@ -1390,7 +1771,7 @@ set_port_bandwidth_limit() {
             remove_tc_limit "$port"
             update_config ".ports.\"$port\".bandwidth_limit.enabled = false |
                 .ports.\"$port\".bandwidth_limit.rate = \"unlimited\""
-            echo -e "${GREEN}端口 $port 带宽限制已移除${NC}"
+            echo -e "${GREEN}$(get_port_display_name "$port") 带宽限制已移除${NC}"
             success_count=$((success_count + 1))
             continue
         fi
@@ -1398,7 +1779,7 @@ set_port_bandwidth_limit() {
         remove_tc_limit "$port"
 
         if ! validate_bandwidth "$limit"; then
-            echo -e "${RED}端口 $port 格式错误，请使用如：500Kbps, 100Mbps, 1Gbps${NC}"
+            echo -e "${RED}$(get_port_display_name "$port") 格式错误，请使用如：500Kbps, 100Mbps, 1Gbps${NC}"
             continue
         fi
 
@@ -1409,7 +1790,7 @@ set_port_bandwidth_limit() {
             update_config ".ports.\"$port\".bandwidth_limit.enabled = true |
                 .ports.\"$port\".bandwidth_limit.rate = \"$limit\""
 
-            echo -e "${GREEN}端口 $port 带宽限制设置成功: $limit${NC}"
+            echo -e "${GREEN}$(get_port_display_name "$port") 带宽限制设置成功: $limit${NC}"
         else
             echo -e "${RED}端口 $port 限速规则应用失败，请检查 tc/nftables 环境${NC}"
             continue
@@ -1454,9 +1835,12 @@ set_port_quota_limit() {
     fi
 
     echo
-    local port_list=$(IFS=','; echo "${ports_to_quota[*]}")
+    local display_list
+    for port in "${ports_to_quota[@]}"; do
+        display_list="${display_list:+$display_list,}$(get_port_display_name "$port")"
+    done
     while true; do
-        echo "为端口 $port_list 设置流量配额（总量控制）:"
+        echo "为 $display_list 设置流量配额（总量控制）:"
         echo "请输入配额值（0为无限制）（要带单位MB/GB/T）:"
         echo "(多端口分别配额使用逗号,分隔)(只输入一个值，应用到所有端口):"
         read -p "流量配额(回车默认0): " quota_input
@@ -1499,11 +1883,11 @@ set_port_quota_limit() {
         if [ "$quota" = "0" ] || [ -z "$quota" ]; then
             remove_nftables_quota "$port"
             # 设为无限额时删除reset_day字段并清除定时任务
-            jq ".ports.\"$port\".quota.enabled = true | 
-                .ports.\"$port\".quota.monthly_limit = \"unlimited\" | 
+            jq ".ports.\"$port\".quota.enabled = true |
+                .ports.\"$port\".quota.monthly_limit = \"unlimited\" |
                 del(.ports.\"$port\".quota.reset_day)" "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
             remove_port_auto_reset_cron "$port"
-            echo -e "${GREEN}端口 $port 流量配额设置为无限制${NC}"
+            echo -e "${GREEN}$(get_port_display_name "$port") 流量配额设置为无限制${NC}"
             success_count=$((success_count + 1))
             continue
         fi
@@ -1527,7 +1911,7 @@ set_port_quota_limit() {
         fi
         
         setup_port_auto_reset_cron "$port"
-        echo -e "${GREEN}端口 $port 流量配额设置成功: $quota${NC}"
+        echo -e "${GREEN}$(get_port_display_name "$port") 流量配额设置成功: $quota${NC}"
         success_count=$((success_count + 1))
     done
 
@@ -1573,7 +1957,7 @@ change_port_billing_mode() {
     for port in $active_ports; do
         local current_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
         local mode_display=$([ "$current_mode" = "double" ] && echo "双向" || echo "单向")
-        echo -e "  $idx. 端口 $port - 当前模式: ${BLUE}${mode_display}${NC}"
+        echo -e "  $idx. $(get_port_display_name "$port") - 当前模式: ${BLUE}${mode_display}${NC}"
         port_list+=("$port")
         ((idx++))
     done
@@ -1597,9 +1981,10 @@ change_port_billing_mode() {
     local target_port="${port_list[$((port_choice-1))]}"
     local current_mode=$(jq -r ".ports.\"$target_port\".billing_mode // \"double\"" "$CONFIG_FILE")
     local current_display=$([ "$current_mode" = "double" ] && echo "双向" || echo "单向")
-    
+    local target_label=$(get_port_display_name "$target_port")
+
     echo
-    echo -e "端口 $target_port 当前统计方式: ${BLUE}$current_display${NC}"
+    echo -e "$target_label 当前统计方式: ${BLUE}$current_display${NC}"
     echo
     echo "1. 双向流量统计"
     echo "2. 单向流量统计"
@@ -1647,7 +2032,7 @@ change_port_billing_mode() {
         apply_nftables_quota "$target_port" "$quota_limit"
     fi
     
-    echo -e "${GREEN}✓ 已应用 $new_display 模式，流量数据已保留${NC}"
+    echo -e "${GREEN}✓ ${target_label}已应用 $new_display 模式，流量数据已保留${NC}"
     sleep 2
     
     change_port_billing_mode
@@ -1656,6 +2041,11 @@ change_port_billing_mode() {
 apply_nftables_quota() {
     local port=$1
     local quota_limit=$2
+
+    # 整机配额只做监控告警（tag+推送预警），不做内核阻断：整机 drop 一旦误判会连 SSH 一起断
+    [ "$port" = "$VPS_PORT_ID" ] && return 0
+
+    NFT_TABLE_CACHE=""
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
     local billing_mode=$(jq -r ".ports.\"$port\".billing_mode // \"double\"" "$CONFIG_FILE")
@@ -1743,6 +2133,11 @@ apply_nftables_quota() {
 # 删除nftables配额限制 - 使用handle删除法
 remove_nftables_quota() {
     local port=$1
+
+    # 整机伪端口无配额对象
+    [ "$port" = "$VPS_PORT_ID" ] && return 0
+
+    NFT_TABLE_CACHE=""
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
 
@@ -1754,19 +2149,15 @@ remove_nftables_quota() {
         local quota_name="port_${port}_quota"
     fi
 
-    # 循环删除所有包含配额名称的规则 - 每次只获取一个handle
+    # 一次列出所有配额规则句柄再逐个删（句柄互不影响），不再每删一条 dump 一次全表
     local deleted_count=0
-    while true; do
-        # 每次只获取第一个匹配的配额规则handle
-        local handle=$(nft -a list table $family $table_name 2>/dev/null | \
-            grep "quota name \"$quota_name\"" | \
-            head -n1 | \
-            sed -n 's/.*# handle \([0-9]\+\)$/\1/p')
+    local handles=()
+    mapfile -t handles < <(nft -a list table $family $table_name 2>/dev/null | \
+        grep "quota name \"$quota_name\"" | \
+        sed -n 's/.*# handle \([0-9]\+\)$/\1/p' || true)
 
-        if [ -z "$handle" ]; then
-            break
-        fi
-
+    local handle
+    for handle in "${handles[@]}"; do
         for chain in input output forward; do
             if nft delete rule $family $table_name $chain handle $handle 2>/dev/null; then
                 deleted_count=$((deleted_count + 1))
@@ -1789,20 +2180,160 @@ list_shaping_interfaces() {
     ls /sys/class/net | grep -v -E "^(lo|ifb|docker0|br-.*|veth.*|virbr.*|wg.*|tun.*|tap.*)$"
 }
 
+# 整机限速启用时父类 1:1 的速率上限（配置里存的是用户输入格式，需走同一条换算链）；
+# 端口类都是 1:1 子类，实际速率 = min(端口限速, 整机限速)。未启用返回空
+get_vps_tc_ceiling() {
+    local enabled=$(jq -r ".ports.\"$VPS_PORT_ID\".bandwidth_limit.enabled // false" "$CONFIG_FILE")
+    local rate=$(jq -r ".ports.\"$VPS_PORT_ID\".bandwidth_limit.rate // \"unlimited\"" "$CONFIG_FILE")
+    if [ "$enabled" = "true" ] && [ "$rate" != "unlimited" ]; then
+        local tc_rate=$(convert_bandwidth_to_tc "$rate")
+        if [ -n "$tc_rate" ]; then
+            echo "$(calculate_effective_rate_kbps $(parse_tc_rate_to_kbps "$tc_rate"))kbit"
+        fi
+    fi
+}
+
+# HTB default 类 minor 0x30 与端口 48 的限速类天然同号（单端口类 minor=端口号的十六进制）。
+# 端口 48 在限时时让出 1:30：整机路径不创建/改写它，避免覆盖或清除端口 48 自身的限速；
+# 缺省类缺失时内核对未分类流量直通，出向仍有父类 1:1 收口
+vps_default_class_in_use() {
+    local enabled=$(jq -r '.ports."48".bandwidth_limit.enabled // false' "$CONFIG_FILE" 2>/dev/null || echo false)
+    local rate=$(jq -r '.ports."48".bandwidth_limit.rate // "unlimited"' "$CONFIG_FILE" 2>/dev/null || echo unlimited)
+    [ "$enabled" = "true" ] && [ "$rate" != "unlimited" ]
+}
+
+# 整机限速（伪端口 00）：不建端口类，直接压父类 1:1 速率 + default 30 兜底类，
+# 端口类都是 1:1 子类，实际速率 = min(端口限速, 整机限速)，二者天然组合
+apply_vps_tc_limit() {
+    local total_limit=$1
+
+    local raw_rate_kbps=$(parse_tc_rate_to_kbps "$total_limit")
+    local effective_rate_kbps=$(calculate_effective_rate_kbps "$raw_rate_kbps")
+    local effective_limit="${effective_rate_kbps}kbit"
+
+    local dev
+    local ok_count=0
+    for dev in $(list_shaping_interfaces); do
+        if ! tc qdisc show dev $dev 2>/dev/null | grep -q "qdisc htb 1:"; then
+            tc qdisc replace dev $dev root handle 1: htb default 30 2>/dev/null || true
+        fi
+        if tc class replace dev $dev parent 1: classid 1:1 htb rate $effective_limit ceil $effective_limit 2>/dev/null; then
+            ok_count=$((ok_count + 1))
+        else
+            log_notification "整机限速：压父类失败 (网卡 $dev)"
+        fi
+        # default 类兜底未分类流量（无端口限速时端口流量也走这里）
+        if ! vps_default_class_in_use; then
+            if ! tc class show dev $dev 2>/dev/null | grep -q "class htb 1:30"; then
+                tc class add dev $dev parent 1:1 classid 1:30 htb rate $effective_limit ceil $effective_limit 2>/dev/null || true
+            else
+                tc class change dev $dev parent 1:1 classid 1:30 htb rate $effective_limit ceil $effective_limit 2>/dev/null || true
+            fi
+        fi
+    done
+    [ $ok_count -eq 0 ] && return 1
+
+    # 入向：tc 只能整形出向，ifb 链路不存在时先建（与 apply_ingress_shaping 同法），
+    # 否则纯整机限速（无端口限速）场景下入向完全不受控
+    if ! ip link show ifb0 >/dev/null 2>&1; then
+        modprobe ifb numifbs=1 2>/dev/null || true
+        ip link add ifb0 type ifb 2>/dev/null || true
+        ip link set ifb0 up 2>/dev/null || true
+    fi
+    # ifb 是 NOARP 虚拟设备，up 后 operstate 仍是 UNKNOWN，判据用 UP flag
+    if ! ip link show ifb0 2>/dev/null | grep -q "<.*UP.*>"; then
+        log_notification "ifb0 创建失败，整机入向限速未生效"
+        return 0
+    fi
+
+    for dev in $(list_shaping_interfaces); do
+        if ! tc qdisc show dev $dev 2>/dev/null | grep -q "^qdisc ingress"; then
+            tc qdisc add dev $dev handle ffff: ingress 2>/dev/null || true
+        fi
+        # 全量重定向只装一次：重复装会按相同 match 叠加多条等价规则
+        if ! tc filter show dev $dev parent ffff: 2>/dev/null | grep -q "mirred.*ifb0"; then
+            tc filter add dev $dev parent ffff: protocol ip u32 match u32 0 0 \
+                action mirred egress redirect dev ifb0 2>/dev/null || true
+            tc filter add dev $dev parent ffff: protocol ipv6 u32 match u32 0 0 \
+                action mirred egress redirect dev ifb0 2>/dev/null || true
+        fi
+    done
+
+    if ! tc qdisc show dev ifb0 2>/dev/null | grep -q "qdisc htb 1:"; then
+        tc qdisc add dev ifb0 root handle 1: htb default 1 2>/dev/null || true
+    fi
+    # 入向整机上限压在 ifb0 的 1:1：端口类是它的子类，min 组合语义与出向一致
+    tc class replace dev ifb0 parent 1: classid 1:1 htb rate $effective_limit ceil $effective_limit 2>/dev/null || true
+    return 0
+}
+
+# 整机限速解除：父类还原为 100gbit 直通（1:30 一并还原）；
+# 已无端口限速类时连同整形链路一起拆除——ifb 入向镜像是逐包转发，留着常驻耗 CPU
+remove_vps_tc_limit() {
+    local dev
+    local default_busy=false
+    vps_default_class_in_use && default_busy=true
+
+    for dev in $(list_shaping_interfaces); do
+        tc class replace dev $dev parent 1: classid 1:1 htb rate 100gbit 2>/dev/null || true
+        if [ "$default_busy" = "false" ]; then
+            tc class change dev $dev parent 1:1 classid 1:30 htb rate 100gbit ceil 100gbit 2>/dev/null || true
+        fi
+    done
+    if ip link show ifb0 >/dev/null 2>&1; then
+        tc class replace dev ifb0 parent 1: classid 1:1 htb rate 100gbit 2>/dev/null || true
+    fi
+
+    if [ "$default_busy" = "false" ]; then
+        # 剩余子类里排除整机 default 类(1:30)，仅剩它说明没有端口限速在用
+        local port_classes=0
+        for dev in $(list_shaping_interfaces); do
+            port_classes=$((port_classes + $(tc class show dev $dev 2>/dev/null | grep "parent 1:1" | grep -vc "class htb 1:30 " || true)))
+        done
+        local ifb_classes=0
+        if ip link show ifb0 >/dev/null 2>&1; then
+            ifb_classes=$(tc class show dev ifb0 2>/dev/null | grep -c "parent 1:1" || true)
+        fi
+        if [ "$port_classes" -eq 0 ] && [ "$ifb_classes" -eq 0 ]; then
+            for dev in $(list_shaping_interfaces); do
+                tc qdisc del dev $dev root 2>/dev/null || true
+                tc qdisc del dev $dev ingress 2>/dev/null || true
+            done
+            if ip link show ifb0 >/dev/null 2>&1; then
+                tc qdisc del dev ifb0 root 2>/dev/null || true
+                ip link set ifb0 down 2>/dev/null || true
+                ip link del ifb0 2>/dev/null || true
+            fi
+        fi
+    fi
+    return 0
+}
+
 apply_tc_limit() {
     local port=$1
     local total_limit=$2
 
+    # 整机限速走父类收口路径
+    if [ "$port" = "$VPS_PORT_ID" ]; then
+        apply_vps_tc_limit "$total_limit"
+        return $?
+    fi
+
 
     # 出向整形挂到所有真实网卡(幂等)；已有根qdisc(如systemd默认fq_codel)时
     # add 会静默失败导致限速全灭，而已是自己的htb时 replace 不支持change，先探测再创建
+    # 根类默认 100gbit 直通避免父类成为多端口总速率瓶颈；整机限速启用时改为整机速率收口，
+    # 否则应用端口限速会把整机上限抹掉（开机恢复按 00→端口 顺序也会走到这里）
+    local root_rate="100gbit"
+    local vps_ceiling=$(get_vps_tc_ceiling)
+    [ -n "$vps_ceiling" ] && root_rate="$vps_ceiling"
+
     local dev
     for dev in $(list_shaping_interfaces); do
         if ! tc qdisc show dev $dev 2>/dev/null | grep -q "qdisc htb 1:"; then
             tc qdisc replace dev $dev root handle 1: htb default 30 2>/dev/null || true
         fi
-        # 根类速率远超常见网卡，避免父类成为多端口总速率瓶颈
-        tc class replace dev $dev parent 1: classid 1:1 htb rate 100gbit 2>/dev/null || true
+        tc class replace dev $dev parent 1: classid 1:1 htb rate $root_rate 2>/dev/null || true
     done
 
     local class_id=$(generate_tc_class_id "$port")
@@ -1965,11 +2496,15 @@ apply_ingress_shaping() {
         fi
     done
 
-    # ifb0 上建与出向对称的 HTB 树，default 指向 100gbit 兜底类（未限速端口直通）
+    # ifb0 上建与出向对称的 HTB 树，default 指向 100gbit 兜底类（未限速端口直通）；
+    # 整机限速启用时父类保持整机速率，同出向的覆盖保护
     if ! tc qdisc show dev ifb0 2>/dev/null | grep -q "qdisc htb 1:"; then
         tc qdisc add dev ifb0 root handle 1: htb default 1 2>/dev/null || true
     fi
-    tc class replace dev ifb0 parent 1: classid 1:1 htb rate 100gbit 2>/dev/null || true
+    local ifb_root_rate="100gbit"
+    local vps_ceiling=$(get_vps_tc_ceiling)
+    [ -n "$vps_ceiling" ] && ifb_root_rate="$vps_ceiling"
+    tc class replace dev ifb0 parent 1: classid 1:1 htb rate $ifb_root_rate 2>/dev/null || true
 
     local class_id=$(generate_tc_class_id "$port")
     # 拆除顺序必须 filter → leaf → class：任何一环引用着 class 都会 "HTB class in use"
@@ -2061,6 +2596,11 @@ remove_ingress_shaping() {
     tc qdisc del dev ifb0 parent $class_id 2>/dev/null || true
     tc class del dev ifb0 classid $class_id 2>/dev/null || true
 
+    # 整机入向限速仍启用时保留 ifb0/ingress 链路，只拆端口自己的类
+    if [ -n "$(get_vps_tc_ceiling)" ]; then
+        return 0
+    fi
+
     # ifb0 上已无限速类：整条链路拆除（所有装过 ingress 的网卡一起清）
     if [ "$(tc class show dev ifb0 2>/dev/null | grep -c "parent 1:1" || true)" -eq 0 ]; then
         local dev
@@ -2076,6 +2616,12 @@ remove_ingress_shaping() {
 # 删除TC带宽限制
 remove_tc_limit() {
     local port=$1
+
+    # 整机限速解除走父类还原路径
+    if [ "$port" = "$VPS_PORT_ID" ]; then
+        remove_vps_tc_limit
+        return 0
+    fi
 
     local class_id=$(generate_tc_class_id "$port")
 
@@ -2147,8 +2693,11 @@ set_reset_day() {
     fi
 
     echo
-    local port_list=$(IFS=','; echo "${ports_to_set[*]}")
-    echo "为端口 $port_list 设置月重置日期:"
+    local display_list
+    for port in "${ports_to_set[@]}"; do
+        display_list="${display_list:+$display_list,}$(get_port_display_name "$port")"
+    done
+    echo "为 $display_list 设置月重置日期:"
     echo "请输入月重置日（多端口使用逗号,分隔）(0代表不重置):"
     echo "(只输入一个值，应用到所有端口):"
     read -p "月重置日 [0-31]: " reset_day_input
@@ -2170,7 +2719,7 @@ set_reset_day() {
         local reset_day=$(echo "${RESET_DAYS[$i]}" | tr -d ' ')
 
         if ! [[ "$reset_day" =~ ^[0-9]+$ ]] || [ "$reset_day" -lt 0 ] || [ "$reset_day" -gt 31 ]; then
-            echo -e "${RED}端口 $port 重置日期无效: $reset_day，必须是0-31之间的数字${NC}"
+            echo -e "${RED}$(get_port_display_name "$port") 重置日期无效: $reset_day，必须是0-31之间的数字${NC}"
             continue
         fi
 
@@ -2178,17 +2727,17 @@ set_reset_day() {
             # 删除reset_day字段并移除定时任务
             jq "del(.ports.\"$port\".quota.reset_day)" "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
             remove_port_auto_reset_cron "$port"
-            echo -e "${GREEN}端口 $port 已取消自动重置${NC}"
+            echo -e "${GREEN}$(get_port_display_name "$port") 已取消自动重置${NC}"
         else
             # 无流量配额的端口不需要自动重置
             local monthly_limit=$(jq -r ".ports.\"$port\".quota.monthly_limit // \"unlimited\"" "$CONFIG_FILE")
             if [ "$monthly_limit" = "unlimited" ]; then
-                echo -e "${YELLOW}端口 $port 未设置流量配额，请先通过「端口限制设置管理→设置端口流量配额」设置配额后再设置重置日${NC}"
+                echo -e "${YELLOW}$(get_port_display_name "$port") 未设置流量配额，请先通过「端口限制设置管理→设置端口流量配额」设置配额后再设置重置日${NC}"
                 continue
             fi
             update_config ".ports.\"$port\".quota.reset_day = $reset_day"
             setup_port_auto_reset_cron "$port"
-            echo -e "${GREEN}端口 $port 月重置日设置成功: 每月${reset_day}日${NC}"
+            echo -e "${GREEN}$(get_port_display_name "$port") 月重置日设置成功: 每月${reset_day}日${NC}"
         fi
         
         success_count=$((success_count + 1))
@@ -2238,6 +2787,9 @@ immediate_reset() {
     echo "将重置以下端口的流量统计:"
     local total_all_traffic=0
     for port in "${ports_to_reset[@]}"; do
+        # 重置整机前先采集一次，入账与历史记录才是最新值
+        [ "$port" = "$VPS_PORT_ID" ] && collect_vps_traffic
+
         local traffic_data=($(get_nftables_counter_data "$port"))
         local input_bytes=${traffic_data[0]}
         local output_bytes=${traffic_data[1]}
@@ -2245,7 +2797,7 @@ immediate_reset() {
         local total_bytes=$(calculate_total_traffic "$input_bytes" "$output_bytes" "$billing_mode")
         local total_formatted=$(format_bytes $total_bytes)
 
-        echo "  端口 $port: $total_formatted"
+        echo "  $(get_port_display_name "$port"): $total_formatted"
         total_all_traffic=$((total_all_traffic + total_bytes))
     done
 
@@ -2258,6 +2810,7 @@ immediate_reset() {
         local reset_count=0
         for port in "${ports_to_reset[@]}"; do
             # 获取当前流量用于记录
+            [ "$port" = "$VPS_PORT_ID" ] && collect_vps_traffic
             local traffic_data=($(get_nftables_counter_data "$port"))
             local input_bytes=${traffic_data[0]}
             local output_bytes=${traffic_data[1]}
@@ -2267,7 +2820,7 @@ immediate_reset() {
             reset_port_nftables_counters "$port"
             record_reset_history "$port" "$total_bytes"
 
-            echo -e "${GREEN}端口 $port 流量统计重置成功${NC}"
+            echo -e "${GREEN}$(get_port_display_name "$port") 流量统计重置成功${NC}"
             reset_count=$((reset_count + 1))
         done
 
@@ -2286,6 +2839,9 @@ immediate_reset() {
 auto_reset_port() {
     local port="$1"
 
+    # 整机重置前采集一次：月度入账到重置刻为止
+    [ "$port" = "$VPS_PORT_ID" ] && collect_vps_traffic
+
     local traffic_data=($(get_nftables_counter_data "$port"))
     local input_bytes=${traffic_data[0]}
     local output_bytes=${traffic_data[1]}
@@ -2295,14 +2851,29 @@ auto_reset_port() {
     reset_port_nftables_counters "$port"
     record_reset_history "$port" "$total_bytes"
 
-    log_notification "端口 $port 自动重置完成，重置前流量: $(format_bytes $total_bytes)"
+    local port_label=$(get_port_display_name "$port")
 
-    echo "端口 $port 自动重置完成"
+    log_notification "$port_label 自动重置完成，重置前流量: $(format_bytes $total_bytes)"
+
+    echo "$port_label 自动重置完成"
 }
 
 # 重置端口nftables计数器和配额
 reset_port_nftables_counters() {
     local port=$1
+
+    if [ "$port" = "$VPS_PORT_ID" ]; then
+        # 整机重置：仅清 monthly，lifetime_raw 基准保持不动（否则下次 delta 计算会重复累计）
+        vps_lock
+        local data=$(vps_read_data)
+        local new_data=$(printf '%s' "$data" | jq -c --arg now "$(get_beijing_time +%s)" \
+            '.monthly = {ifaces: {}, reset_at: ($now | tonumber)}' 2>/dev/null) || new_data="$data"
+        vps_write_data "$new_data"
+        vps_unlock
+        return 0
+    fi
+
+    NFT_TABLE_CACHE=""
     local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
     local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
 
@@ -2374,6 +2945,7 @@ export_config() {
     echo "包含内容："
     echo "  - 主配置文件 (config.json)"
     echo "  - 端口监控数据"
+    echo "  - 整机流量数据"
     echo "  - 通知配置"
     echo "  - 日志文件"
     echo
@@ -2381,6 +2953,9 @@ export_config() {
     # 创建临时目录用于打包
     local temp_dir=$(mktemp -d)
     local package_dir="$temp_dir/port-traffic-dog-config"
+
+    # 打包前先采集一次，整机流量数据随包导出（必须在 cp 之前，包里才是最新值）
+    collect_vps_traffic
 
     # 复制配置目录到临时位置
     cp -r "$CONFIG_DIR" "$package_dir"
@@ -2547,6 +3122,9 @@ import_config() {
 
     # 重新初始化nftables
     init_nftables
+
+    # 旧版本导出的包里没有整机流量条目：幂等补建 + 重建采集 cron
+    ensure_vps_port_config
 
     # 为每个端口重新应用规则
     local new_ports=($(get_active_ports))
@@ -2728,6 +3306,7 @@ uninstall_script() {
     echo "  - 配置目录: $CONFIG_DIR"
     echo "  - 所有nftables规则"
     echo "  - 所有TC限制规则"
+    echo "  - 整机流量监控及数据"
     echo "  - 通知定时任务"
     echo
     echo -e "${RED}警告：此操作将完全删除端口流量狗及其所有数据！${NC}"
@@ -2749,6 +3328,7 @@ uninstall_script() {
         remove_telegram_notification_cron 2>/dev/null || true
         remove_wecom_notification_cron 2>/dev/null || true
         remove_restore_cron 2>/dev/null || true
+        remove_vps_collect_cron 2>/dev/null || true
 
         rm -rf "$CONFIG_DIR" 2>/dev/null || true
         rm -f "/usr/local/bin/$SHORTCUT_COMMAND" 2>/dev/null || true
@@ -2960,7 +3540,7 @@ format_status_message() {
     local server_name="${1:-$(hostname)}"  # 接受服务器名称参数
     local timestamp=$(get_beijing_time '+%Y-%m-%d %H:%M:%S')
     local notification_icon="🔔"
-    local active_ports=($(get_active_ports))
+    local active_ports=($(get_monitored_ports))
     local port_count=${#active_ports[@]}
     local daily_total=$(get_daily_total_traffic)
 
@@ -2968,6 +3548,7 @@ format_status_message() {
 介绍主页:<code>https://zywe.de</code> | 项目开源:<code>https://github.com/zywe03/realm-xwPF</code>
 一只轻巧的'守护犬'，时刻守护你的端口流量 | 快捷命令: dog
 ---
+$(format_vps_traffic_line "plain")
 状态: 监控中 | 守护端口: ${port_count}个 | 端口总流量: ${daily_total}
 ────────────────────────────────────────
 <pre>$(format_port_list "message")</pre>
@@ -2982,7 +3563,7 @@ format_text_status_message() {
     local server_name="${1:-$(hostname)}"
     local timestamp=$(get_beijing_time '+%Y-%m-%d %H:%M:%S')
     local notification_icon="🔔"
-    local active_ports=($(get_active_ports))
+    local active_ports=($(get_monitored_ports))
     local port_count=${#active_ports[@]}
     local daily_total=$(get_daily_total_traffic)
 
@@ -2990,6 +3571,7 @@ format_text_status_message() {
 介绍主页: https://zywe.de | 项目开源: https://github.com/zywe03/realm-xwPF
 一只轻巧的'守护犬'，时刻守护你的端口流量 | 快捷命令: dog
 ---
+$(format_vps_traffic_line "plain")
 状态: 监控中 | 守护端口: ${port_count}个 | 端口总流量: ${daily_total}
 ────────────────────────────────────────
 $(format_port_list "message")
@@ -3004,7 +3586,7 @@ format_markdown_status_message() {
     local server_name="${1:-$(hostname)}"
     local timestamp=$(get_beijing_time '+%Y-%m-%d %H:%M:%S')
     local notification_icon="🔔"
-    local active_ports=($(get_active_ports))
+    local active_ports=($(get_monitored_ports))
     local port_count=${#active_ports[@]}
     local daily_total=$(get_daily_total_traffic)
 
@@ -3012,6 +3594,7 @@ format_markdown_status_message() {
 介绍主页: \`https://zywe.de\` | 项目开源: \`https://github.com/zywe03/realm-xwPF\`
 一只轻巧的'守护犬'，时刻守护你的端口流量 | 快捷命令: dog
 ---
+$(format_vps_traffic_line "markdown")
 **状态**: 监控中 | **守护端口**: ${port_count}个 | **端口总流量**: ${daily_total}
 ────────────────────────────────────────
 $(format_port_list "markdown")
@@ -3095,8 +3678,14 @@ main() {
     # 但取数前先自愈监控状态并落盘备份，推送/重置读到的才是真实值
     if [ $# -gt 0 ]; then
         case $1 in
+            --collect-vps-traffic)
+                # 整机流量采集快速路径：只做增量计算，不碰 nftables/通知模块
+                collect_vps_traffic
+                exit 0
+                ;;
             --restore-monitoring)
                 ensure_monitoring_state
+                collect_vps_traffic
                 exit 0
                 ;;
             --reset-port)
@@ -3105,6 +3694,7 @@ main() {
                     exit 1
                 fi
                 ensure_monitoring_state
+                collect_vps_traffic
                 auto_reset_port "$2"
                 save_traffic_data
                 exit 0
@@ -3112,6 +3702,7 @@ main() {
             --send-telegram-status)
                 local telegram_script="$CONFIG_DIR/notifications/telegram.sh"
                 ensure_monitoring_state
+                collect_vps_traffic
                 save_traffic_data
                 if [ -f "$telegram_script" ]; then
                     source "$telegram_script"
@@ -3122,6 +3713,7 @@ main() {
             --send-wecom-status)
                 local wecom_script="$CONFIG_DIR/notifications/wecom.sh"
                 ensure_monitoring_state
+                collect_vps_traffic
                 save_traffic_data
                 if [ -f "$wecom_script" ]; then
                     source "$wecom_script"
@@ -3131,6 +3723,7 @@ main() {
                 ;;
             --send-status)
                 ensure_monitoring_state
+                collect_vps_traffic
                 save_traffic_data
                 send_status_notification
                 exit 0
@@ -3174,6 +3767,7 @@ main() {
                 echo "  --send-telegram-status    发送Telegram状态通知"
                 echo "  --send-wecom-status       发送企业wx 状态通知"
                 echo "  --reset-port PORT         重置指定端口流量"
+                echo "  --collect-vps-traffic     采集整机流量(整机流量监控用)"
                 echo "  --restore-monitoring      重建丢失的监控规则(开机自恢复用)"
                 echo
                 echo -e "${GREEN}快捷命令: $SHORTCUT_COMMAND${NC}"
