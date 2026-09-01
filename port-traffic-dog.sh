@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-readonly SCRIPT_VERSION="1.2.8"
+readonly SCRIPT_VERSION="1.2.9"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -699,18 +699,29 @@ generate_port_range_mark() {
     echo $(( (start_port * 1000 + end_port) % 65536 ))
 }
 
-# burst速率突发计算
+# burst速率突发计算：突发窗口取10ms——过大的burst会以网卡线速瞬间打出，
+# 把排队压力转移给下游设备；低速档用4*MTU保底，高速档用64KB封顶
 calculate_tc_burst() {
-    local base_rate=$1
-    local rate_bytes_per_sec=$((base_rate * 1000 / 8))
-    local burst_by_formula=$((rate_bytes_per_sec / 20))  # 50ms缓冲
-    local min_burst=$((2 * 1500))                        # 2个MTU最小值
+    local base_rate_kbps=$1
+    local rate_bytes_per_sec=$((base_rate_kbps * 1000 / 8))
+    local burst_10ms=$((rate_bytes_per_sec / 100))        # 10ms缓冲
+    local min_burst=$((4 * 1500))                          # 4个以太网MTU保底(约6KB)
+    local max_burst=$((64 * 1024))                         # 64KB最大突发上限
 
-    if [ $burst_by_formula -gt $min_burst ]; then
-        echo $burst_by_formula
-    else
-        echo $min_burst
+    local burst_calc=$burst_10ms
+    if [ $burst_calc -lt $min_burst ]; then
+        burst_calc=$min_burst
+    elif [ $burst_calc -gt $max_burst ]; then
+        burst_calc=$max_burst
     fi
+    echo $burst_calc
+}
+
+# 协议开销补偿：tc 按含帧头/包头的线速计数，用户测速只算有效载荷，
+# 不补偿时实测会比配置档位低约10%
+calculate_effective_rate_kbps() {
+    local target_rate_kbps=$1
+    echo $(( target_rate_kbps * 110 / 100 ))
 }
 
 format_tc_burst() {
@@ -1798,17 +1809,19 @@ apply_tc_limit() {
     # 改档位时 filter/leaf 引用着旧 class 直接删会失败，先拆后建
     remove_egress_filters "$port"
 
-    # 计算burst：取 50ms 速率量，给短连接/慢启动留突发余量
-    local rate_kbps=$(parse_tc_rate_to_kbps "$total_limit")
-    local burst_bytes=$(calculate_tc_burst "$rate_kbps")
+    # 计算补偿后的有效限速与 burst，出向/入向共用同一套换算
+    local raw_rate_kbps=$(parse_tc_rate_to_kbps "$total_limit")
+    local effective_rate_kbps=$(calculate_effective_rate_kbps "$raw_rate_kbps")
+    local effective_limit="${effective_rate_kbps}kbit"
+    local burst_bytes=$(calculate_tc_burst "$effective_rate_kbps")
     local burst_size=$(format_tc_burst "$burst_bytes")
 
     local ok_count=0
     for dev in $(list_shaping_interfaces); do
         tc qdisc del dev $dev parent $class_id 2>/dev/null || true
         tc class del dev $dev classid $class_id 2>/dev/null || true
-        if tc class add dev $dev parent 1:1 classid $class_id htb rate $total_limit ceil $total_limit burst $burst_size 2>/dev/null; then
-            attach_leaf_qdisc $dev "$class_id"
+        if tc class add dev $dev parent 1:1 classid $class_id htb rate $effective_limit ceil $effective_limit burst $burst_size 2>/dev/null; then
+            attach_leaf_qdisc $dev "$class_id" "$effective_rate_kbps"
             add_egress_filters "$dev" "$port" "$class_id"
             ok_count=$((ok_count + 1))
         else
@@ -1889,12 +1902,31 @@ remove_egress_filters() {
     done
 }
 
+# 探测内核是否支持 CAKE：sch_cake 可能是模块也可能是内建，两次探测都失败才认定不支持
+check_cake_support() {
+    if modprobe sch_cake 2>/dev/null; then
+        return 0
+    fi
+    # 某些内核cake已内建无需modprobe
+    if tc qdisc add dev lo root cake 2>/dev/null; then
+        tc qdisc del dev lo root 2>/dev/null || true
+        return 0
+    fi
+    return 1
+}
+
 attach_leaf_qdisc() {
     local dev=$1
     local class_id=$2
+    local rate_kbps=$3
 
-    # fq_codel 内核默认参数(target 5ms/interval 100ms)，RFC 8290 行业标准
-    tc qdisc replace dev $dev parent $class_id fq_codel 2>/dev/null || true
+    # 优先 CAKE：ethernet 开销补偿 + ack-filter(非对称链路下精简纯ACK)；失败回退 fq_codel
+    if check_cake_support && tc qdisc replace dev "$dev" parent "$class_id" cake bandwidth "${rate_kbps}kbit" ethernet ack-filter 2>/dev/null; then
+        return 0
+    fi
+
+    # 回退方案：fq_codel(target 5ms/interval 100ms)，RFC 8290 行业标准
+    tc qdisc replace dev "$dev" parent "$class_id" fq_codel 2>/dev/null || true
 }
 
 # 入向限速：tc 只能整形出向流量，把入向包经 ifb0 重定向后按出向整形。
@@ -1944,14 +1976,17 @@ apply_ingress_shaping() {
     remove_ingress_filters "$port"
     tc qdisc del dev ifb0 parent $class_id 2>/dev/null || true
     tc class del dev ifb0 classid $class_id 2>/dev/null || true
-    # 与出向同规格的 burst：入向类原来没设，默认值在低速率下突发余量不足
-    local burst_bytes=$(calculate_tc_burst "$(parse_tc_rate_to_kbps "$total_limit")")
+    # 与出向同规格的有效限速与 burst
+    local raw_rate_kbps=$(parse_tc_rate_to_kbps "$total_limit")
+    local effective_rate_kbps=$(calculate_effective_rate_kbps "$raw_rate_kbps")
+    local effective_limit="${effective_rate_kbps}kbit"
+    local burst_bytes=$(calculate_tc_burst "$effective_rate_kbps")
     local burst_size=$(format_tc_burst "$burst_bytes")
-    if ! tc class add dev ifb0 parent 1:1 classid $class_id htb rate $total_limit ceil $total_limit burst $burst_size 2>/dev/null; then
+    if ! tc class add dev ifb0 parent 1:1 classid $class_id htb rate $effective_limit ceil $effective_limit burst $burst_size 2>/dev/null; then
         log_notification "创建入向限速类 $class_id 失败 (端口 $port)"
         return 1
     fi
-    attach_leaf_qdisc ifb0 "$class_id"
+    attach_leaf_qdisc ifb0 "$class_id" "$effective_rate_kbps"
 
     # 入向方向相反：dport 是用户流量，sport 是中转场景本地回源端口
     if is_port_range "$port"; then
