@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-readonly SCRIPT_VERSION="1.3.1"
+readonly SCRIPT_VERSION="1.3.2"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -321,6 +321,7 @@ show_port_list() {
         local status_label=$(get_port_status_label "$port")
         echo "$((i+1)). $(get_port_display_name "$port") $status_label"
     done
+    echo "0. 返回上级菜单"
     return 0
 }
 
@@ -340,6 +341,23 @@ parse_multi_choice_input() {
             echo -e "${RED}无效选择: $choice${NC}"
         fi
     done
+}
+
+# 读取用户选择：输入 0 跳转上级菜单，其余值去空格后写入指定变量
+# 用法：read_user_choice "上级菜单函数名" "提示语" 结果变量名
+# 返回 0=继续(值已写入), 1=已跳转上级菜单(调用方应 return)
+read_user_choice() {
+    local parent_menu="$1"
+    local prompt="$2"
+    local -n _ruc_choice=$3
+
+    read -p "$prompt" _ruc_choice
+    _ruc_choice=$(echo "$_ruc_choice" | tr -d ' ')
+    if [ "$_ruc_choice" = "0" ]; then
+        "$parent_menu"
+        return 1
+    fi
+    return 0
 }
 
 parse_comma_separated_input() {
@@ -1289,7 +1307,7 @@ add_port_monitoring() {
     echo "────────────────────────────────────────────────────────"
     echo
 
-    read -p "请输入要监控的端口号（多端口使用逗号,分隔,端口段使用-分隔）: " port_input
+    read_user_choice manage_port_monitoring "请输入要监控的端口号（多端口使用逗号,分隔,端口段使用-分隔） [0返回]: " port_input || return
 
     local PORTS=()
     parse_port_range_input "$port_input" PORTS
@@ -1471,9 +1489,10 @@ remove_port_monitoring() {
         local status_label=$(get_port_status_label "$port")
         echo "$((i+1)). 端口 $port $status_label"
     done
+    echo "0. 返回上级菜单"
     echo
 
-    read -p "请选择要删除的端口（多端口使用逗号,分隔）: " choice_input
+    read_user_choice manage_port_monitoring "请选择要删除的端口（多端口使用逗号,分隔） [0返回]: " choice_input || return
 
     local valid_choices=()
     local ports_to_delete=()
@@ -1733,7 +1752,7 @@ set_port_bandwidth_limit() {
     fi
     echo
 
-    read -p "请选择要限制的端口（多端口使用逗号,分隔） [1-${#active_ports[@]}]: " choice_input
+    read_user_choice manage_traffic_limits "请选择要限制的端口（多端口使用逗号,分隔） [0返回,1-${#active_ports[@]}]: " choice_input || return
 
     local valid_choices=()
     local ports_to_limit=()
@@ -1826,7 +1845,7 @@ set_port_quota_limit() {
     fi
     echo
 
-    read -p "请选择要设置配额的端口（多端口使用逗号,分隔） [1-${#active_ports[@]}]: " choice_input
+    read_user_choice manage_traffic_limits "请选择要设置配额的端口（多端口使用逗号,分隔） [0返回,1-${#active_ports[@]}]: " choice_input || return
 
     local valid_choices=()
     local ports_to_quota=()
@@ -2684,7 +2703,7 @@ set_reset_day() {
     fi
     echo
 
-    read -p "请选择要设置重置日期的端口（多端口使用逗号,分隔） [1-${#active_ports[@]}]: " choice_input
+    read_user_choice manage_traffic_reset "请选择要设置重置日期的端口（多端口使用逗号,分隔） [0返回,1-${#active_ports[@]}]: " choice_input || return
 
     local valid_choices=()
     local ports_to_set=()
@@ -2773,7 +2792,7 @@ immediate_reset() {
     fi
     echo
 
-    read -p "请选择要立即重置的端口（多端口使用逗号,分隔） [1-${#active_ports[@]}]: " choice_input
+    read_user_choice manage_traffic_reset "请选择要立即重置的端口（多端口使用逗号,分隔） [0返回,1-${#active_ports[@]}]: " choice_input || return
 
     # 处理多选择输入
     local valid_choices=()
