@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-readonly SCRIPT_VERSION="1.3.0"
+readonly SCRIPT_VERSION="1.3.1"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -864,15 +864,24 @@ list_vps_interfaces() {
     list_shaping_interfaces | grep -v "^ifb" || true
 }
 
+# timeout 传数字则限时拿锁（秒），超时返回 1；不传则阻塞等待（重置路径必须拿到锁）
 vps_lock() {
+    local timeout="${1:-}"
     mkdir -p "$CONFIG_DIR"
     exec 8>"$CONFIG_DIR/.vps.lock"
-    flock 8
+    if [ -n "$timeout" ]; then
+        flock -w "$timeout" 8
+    else
+        flock 8
+    fi
 }
 
 vps_unlock() {
     flock -u 8 2>/dev/null || true
-    exec 8>&- 2>/dev/null || true
+    # 裸 exec 只带重定向时，所有重定向会永久作用于当前 shell：
+    # 这里若写 exec 8>&- 2>/dev/null，fd2 将被永久重定向到 /dev/null，
+    # 之后所有 read -p 提示（走 stderr）全部消失
+    exec 8>&- || true
 }
 
 vps_read_data() {
@@ -908,7 +917,8 @@ collect_vps_traffic() {
     local current_boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo "unknown")
     local now=$(get_beijing_time +%s)
 
-    vps_lock
+    # 限时 2 秒拿锁：撞上 cron/推送持锁时不阻塞交互，放弃本轮（cron 下轮补采）
+    vps_lock 2 || return 0
 
     local data=$(vps_read_data)
     local last_boot_id=$(printf '%s' "$data" | jq -r '.lifetime_raw.boot_id // ""' 2>/dev/null || echo "")
