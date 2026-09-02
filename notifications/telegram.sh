@@ -19,18 +19,22 @@ send_telegram_message() {
 
     local bot_token=$(jq -r '.notifications.telegram.bot_token // ""' "$CONFIG_FILE" 2>/dev/null || echo "")
     local chat_id=$(jq -r '.notifications.telegram.chat_id // ""' "$CONFIG_FILE" 2>/dev/null || echo "")
+    local api_host=$(jq -r '.notifications.telegram.api_host // "https://api.telegram.org"' "$CONFIG_FILE" 2>/dev/null || echo "https://api.telegram.org")
 
     if [ -z "$bot_token" ] || [ -z "$chat_id" ]; then
         log_notification "Telegram配置不完整"
         return 1
     fi
 
+    # 去掉尾部斜杠避免拼接出双斜杠
+    api_host="${api_host%/}"
+
     local retry_count=0
 
     # 重试机制；text 用 --data-urlencode 整体编码，备注里的 & + % 换行等才不会被表单解析破坏
     while [ $retry_count -le $TELEGRAM_MAX_RETRIES ]; do
         local response=$(curl -s --connect-timeout $TELEGRAM_CONNECT_TIMEOUT --max-time $TELEGRAM_MAX_TIMEOUT -X POST \
-            "https://api.telegram.org/bot${bot_token}/sendMessage" \
+            "${api_host}/bot${bot_token}/sendMessage" \
             --data-urlencode "chat_id=${chat_id}" \
             --data-urlencode "text=${message}" \
             -d "parse_mode=HTML" \
@@ -129,7 +133,7 @@ telegram_configure() {
         fi
         echo -e "当前状态: ${enable_status} | ${config_status} | 状态通知: ${interval_display}"
         echo
-        echo "1. 配置Bot信息 (Token + Chat ID + 服务器名称)"
+        echo "1. 配置Bot信息 (Token + Chat ID + 服务器名称 + API Host)"
         echo "2. 通知设置管理"
         echo "3. 发送测试消息"
         echo "4. 查看通知日志"
@@ -156,11 +160,13 @@ telegram_configure_bot() {
     echo "2. 获取 Bot Token (格式: 123456789:ABCdefGHIjklMNOpqrsTUVwxyz)"
     echo "3. 获取 Chat ID (个人聊天或群组ID)"
     echo "4. 设置服务器名称用于标识"
+    echo "5. (可选) 自定义 Telegram API Host，中转机连不上 api.telegram.org 时用"
     echo
 
     local current_token=$(jq -r '.notifications.telegram.bot_token' "$CONFIG_FILE")
     local current_chat_id=$(jq -r '.notifications.telegram.chat_id' "$CONFIG_FILE")
     local current_server_name=$(jq -r '.notifications.telegram.server_name' "$CONFIG_FILE")
+    local current_api_host=$(jq -r '.notifications.telegram.api_host // "https://api.telegram.org"' "$CONFIG_FILE")
 
     if [ "$current_token" != "" ] && [ "$current_token" != "null" ]; then
         # 安全显示：隐藏Token中间部分防止泄露
@@ -172,6 +178,9 @@ telegram_configure_bot() {
     fi
     if [ "$current_server_name" != "" ] && [ "$current_server_name" != "null" ]; then
         echo -e "${GREEN}当前服务器名: $current_server_name${NC}"
+    fi
+    if [ "$current_api_host" != "" ] && [ "$current_api_host" != "null" ]; then
+        echo -e "${GREEN}当前API Host: $current_api_host${NC}"
     fi
     echo
 
@@ -211,9 +220,23 @@ telegram_configure_bot() {
         server_name="$default_server_name"
     fi
 
+    # API Host：直连官方就回车跳过；中转机连不上 api.telegram.org 时填反代/镜像地址
+    read -p "请输入Telegram API Host (回车默认: https://api.telegram.org): " api_host
+    if [ -z "$api_host" ]; then
+        api_host="https://api.telegram.org"
+    fi
+    # 校验：必须 http(s) 开头且无空白，避免拼接出非法请求 URL
+    if ! [[ "$api_host" =~ ^https?://[^[:space:]]+$ ]]; then
+        echo -e "${RED}API Host格式错误，必须以 http:// 或 https:// 开头${NC}"
+        sleep 2
+        telegram_configure_bot
+        return
+    fi
+
     # 原子性配置更新：确保配置完整性
     update_config ".notifications.telegram.bot_token = \"$bot_token\" |
         .notifications.telegram.chat_id = \"$chat_id\" |
+        .notifications.telegram.api_host = \"$api_host\" |
         .notifications.telegram.server_name = \"$server_name\" |
         .notifications.telegram.enabled = true |
         .notifications.telegram.status_notifications.enabled = true"

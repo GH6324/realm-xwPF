@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-readonly SCRIPT_VERSION="1.4.0"
+readonly SCRIPT_VERSION="1.4.1"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -170,18 +170,16 @@ init_config() {
       "enabled": false,
       "bot_token": "",
       "chat_id": "",
+      "api_host": "https://api.telegram.org",
       "server_name": "",
       "status_notifications": {
         "enabled": false,
         "interval": "1h"
       }
     },
-    "email": {
+    "webhook": {
       "enabled": false,
-      "status": "coming_soon"
-    },
-    "wecom": {
-      "enabled": false,
+      "platform": "wecom",
       "webhook_url": "",
       "server_name": "",
       "status_notifications": {
@@ -197,6 +195,8 @@ EOF
     setup_exit_hooks
     # 端口组结构迁移：给存量 .ports 补 counter_key + rule_id（幂等，已迁移则跳过）
     migrate_ports_schema
+    # 通知结构迁移：telegram 加 api_host、wecom 重命名为 webhook（幂等，已迁移则跳过）
+    migrate_notifications_schema
     # 整机流量默认开启：幂等补建伪端口配置与采集 cron（全新安装即有，老版本升级自动迁移）
     ensure_vps_port_config
     # 截止日期巡检 cron：到期当日 00:05 起阻断；漏跑（关机）由 @reboot 自恢复兜底
@@ -1377,6 +1377,38 @@ migrate_ports_schema() {
         # 写一条后 existing 集合已变，下一条组派生自然读到新值
     done
     log_notification "配置已迁移到监控单元结构（counter_key + rule_id）"
+}
+
+# 通知结构迁移：旧 .notifications.{telegram,wecom,email} → telegram 加 api_host、
+# wecom 重命名为 webhook 并补 platform、删除 email 占位。幂等：已迁移则跳过
+migrate_notifications_schema() {
+    [ -f "$CONFIG_FILE" ] || return 0
+    # telegram 已有 api_host 且不存在旧 wecom/email 键即视为已迁移
+    local need_migrate
+    need_migrate=$(jq -r '
+        ([.notifications.telegram.api_host // empty] | length == 0) or
+        (.notifications.wecom // null) != null or
+        (.notifications.email // null) != null
+    ' "$CONFIG_FILE" 2>/dev/null || echo "true")
+    [ "$need_migrate" = "false" ] && return 0
+
+    # 单条 jq 原子迁移：所有字段搬运 + 默认值补齐 + 删旧键一次完成，避免多步中途失败留下半截
+    update_config '
+        .notifications.telegram.api_host = (.notifications.telegram.api_host // "https://api.telegram.org")
+        | .notifications.webhook = (.notifications.wecom // .notifications.webhook // {})
+        | .notifications.webhook.platform = (.notifications.webhook.platform // "wecom")
+        | del(.notifications.wecom)
+        | del(.notifications.email)
+    '
+    log_notification "通知配置已迁移（telegram 加 api_host，wecom 重命名为 webhook）"
+
+    # wecom 的 cron 注释串已失效，清理旧标记后按新配置重建启用的通知
+    local temp_cron=$(mktemp)
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗企业wx 通知" > "$temp_cron" || true
+    crontab "$temp_cron"
+    rm -f "$temp_cron"
+    setup_telegram_notification_cron 2>/dev/null || true
+    setup_webhook_notification_cron 2>/dev/null || true
 }
 
 generate_port_range_mark() {
@@ -3890,7 +3922,7 @@ uninstall_script() {
         nft delete table $family $table_name >/dev/null 2>&1 || true
 
         remove_telegram_notification_cron 2>/dev/null || true
-        remove_wecom_notification_cron 2>/dev/null || true
+        remove_webhook_notification_cron 2>/dev/null || true
         remove_restore_cron 2>/dev/null || true
         remove_vps_collect_cron 2>/dev/null || true
         remove_expiry_check_cron 2>/dev/null || true
@@ -3912,20 +3944,14 @@ uninstall_script() {
 manage_notifications() {
     echo -e "${BLUE}=== 通知管理 ===${NC}"
     echo "1. Telegram机器人通知"
-    echo "2. 邮箱通知 [敬请期待]"
-    echo "3. 企业wx 机器人通知"
+    echo "2. Webhook通知 (企业微信/飞书/钉钉)"
     echo "0. 返回主菜单"
     echo
-    read -p "请选择操作 [0-3]: " choice
+    read -p "请选择操作 [0-2]: " choice
 
     case $choice in
         1) manage_telegram_notifications ;;
-        2)
-            echo -e "${YELLOW}预留的邮箱通知功能(画饼的)${NC}"
-            sleep 2
-            manage_notifications
-            ;;
-        3) manage_wecom_notifications ;;
+        2) manage_webhook_notifications ;;
         0) show_main_menu ;;
         *) echo -e "${RED}无效选择${NC}"; sleep 1; manage_notifications ;;
     esac
@@ -3948,18 +3974,18 @@ manage_telegram_notifications() {
     fi
 }
 
-manage_wecom_notifications() {
-    local wecom_script="$CONFIG_DIR/notifications/wecom.sh"
+manage_webhook_notifications() {
+    local webhook_script="$CONFIG_DIR/notifications/webhook.sh"
 
-    if [ -f "$wecom_script" ]; then
+    if [ -f "$webhook_script" ]; then
         # 导出通知管理函数供模块使用
         export_notification_functions
-        source "$wecom_script"
-        wecom_configure
+        source "$webhook_script"
+        webhook_configure
         manage_notifications
     else
-        echo -e "${RED}企业wx 通知模块不存在${NC}"
-        echo "请检查文件: $wecom_script"
+        echo -e "${RED}Webhook 通知模块不存在${NC}"
+        echo "请检查文件: $webhook_script"
         sleep 2
         manage_notifications
     fi
@@ -3991,24 +4017,24 @@ setup_telegram_notification_cron() {
     rm -f "$temp_cron"
 }
 
-setup_wecom_notification_cron() {
+setup_webhook_notification_cron() {
     local script_path="$SCRIPT_PATH"
     local temp_cron=$(mktemp)
-    crontab -l 2>/dev/null | grep -v "# 端口流量狗企业wx 通知" > "$temp_cron" || true
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗Webhook通知" > "$temp_cron" || true
 
-    # 检查企业wx 通知是否启用
-    local wecom_enabled=$(jq -r '.notifications.wecom.status_notifications.enabled // false' "$CONFIG_FILE")
-    if [ "$wecom_enabled" = "true" ]; then
-        local wecom_interval=$(jq -r '.notifications.wecom.status_notifications.interval' "$CONFIG_FILE")
-        case "$wecom_interval" in
-            "1m")  echo "* * * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
-            "15m") echo "*/15 * * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
-            "30m") echo "*/30 * * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
-            "1h")  echo "0 * * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
-            "2h")  echo "0 */2 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
-            "6h")  echo "0 */6 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
-            "12h") echo "0 */12 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
-            "24h") echo "0 0 * * * $script_path --send-wecom-status >/dev/null 2>&1  # 端口流量狗企业wx 通知" >> "$temp_cron" ;;
+    # 检查Webhook通知是否启用
+    local webhook_enabled=$(jq -r '.notifications.webhook.status_notifications.enabled // false' "$CONFIG_FILE")
+    if [ "$webhook_enabled" = "true" ]; then
+        local webhook_interval=$(jq -r '.notifications.webhook.status_notifications.interval' "$CONFIG_FILE")
+        case "$webhook_interval" in
+            "1m")  echo "* * * * * $script_path --send-webhook-status >/dev/null 2>&1  # 端口流量狗Webhook通知" >> "$temp_cron" ;;
+            "15m") echo "*/15 * * * * $script_path --send-webhook-status >/dev/null 2>&1  # 端口流量狗Webhook通知" >> "$temp_cron" ;;
+            "30m") echo "*/30 * * * * $script_path --send-webhook-status >/dev/null 2>&1  # 端口流量狗Webhook通知" >> "$temp_cron" ;;
+            "1h")  echo "0 * * * * $script_path --send-webhook-status >/dev/null 2>&1  # 端口流量狗Webhook通知" >> "$temp_cron" ;;
+            "2h")  echo "0 */2 * * * $script_path --send-webhook-status >/dev/null 2>&1  # 端口流量狗Webhook通知" >> "$temp_cron" ;;
+            "6h")  echo "0 */6 * * * $script_path --send-webhook-status >/dev/null 2>&1  # 端口流量狗Webhook通知" >> "$temp_cron" ;;
+            "12h") echo "0 */12 * * * $script_path --send-webhook-status >/dev/null 2>&1  # 端口流量狗Webhook通知" >> "$temp_cron" ;;
+            "24h") echo "0 0 * * * $script_path --send-webhook-status >/dev/null 2>&1  # 端口流量狗Webhook通知" >> "$temp_cron" ;;
         esac
     fi
 
@@ -4048,9 +4074,9 @@ remove_telegram_notification_cron() {
     rm -f "$temp_cron"
 }
 
-remove_wecom_notification_cron() {
+remove_webhook_notification_cron() {
     local temp_cron=$(mktemp)
-    crontab -l 2>/dev/null | grep -v "# 端口流量狗企业wx 通知" > "$temp_cron" || true
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗Webhook通知" > "$temp_cron" || true
     crontab "$temp_cron"
     rm -f "$temp_cron"
 }
@@ -4064,7 +4090,7 @@ remove_restore_cron() {
 
 export_notification_functions() {
     export -f setup_telegram_notification_cron
-    export -f setup_wecom_notification_cron
+    export -f setup_webhook_notification_cron
     export -f select_notification_interval
 }
 
@@ -4201,12 +4227,12 @@ send_status_notification() {
         fi
     fi
 
-    # 发送企业wx 通知
-    local wecom_script="$CONFIG_DIR/notifications/wecom.sh"
-    if [ -f "$wecom_script" ]; then
-        source "$wecom_script"
+    # 发送Webhook通知
+    local webhook_script="$CONFIG_DIR/notifications/webhook.sh"
+    if [ -f "$webhook_script" ]; then
+        source "$webhook_script"
         total_count=$((total_count + 1))
-        if wecom_send_status_notification; then
+        if webhook_send_status_notification; then
             success_count=$((success_count + 1))
         fi
     fi
@@ -4280,14 +4306,14 @@ main() {
                 fi
                 exit 0
                 ;;
-            --send-wecom-status)
-                local wecom_script="$CONFIG_DIR/notifications/wecom.sh"
+            --send-webhook-status)
+                local webhook_script="$CONFIG_DIR/notifications/webhook.sh"
                 ensure_monitoring_state
                 collect_vps_traffic
                 save_traffic_data
-                if [ -f "$wecom_script" ]; then
-                    source "$wecom_script"
-                    wecom_send_status_notification
+                if [ -f "$webhook_script" ]; then
+                    source "$webhook_script"
+                    webhook_send_status_notification
                 fi
                 exit 0
                 ;;
@@ -4335,7 +4361,7 @@ main() {
                 echo "  --uninstall               卸载脚本"
                 echo "  --send-status             发送所有启用的状态通知"
                 echo "  --send-telegram-status    发送Telegram状态通知"
-                echo "  --send-wecom-status       发送企业wx 状态通知"
+                echo "  --send-webhook-status     发送Webhook状态通知"
                 echo "  --reset-port PORT         重置指定监控项流量（支持端口/端口段/端口组）"
                 echo "  --collect-vps-traffic     采集整机流量(整机流量监控用)"
                 echo "  --restore-monitoring      重建丢失的监控规则(开机自恢复用)"
