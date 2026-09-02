@@ -156,9 +156,11 @@ bash /usr/local/bin/xwPF.sh
   - 指定中转机的入口网卡,或指定某个出口网卡 (适用于多网卡情况)
   - 更多玩法参考[zhboner/realm](https://github.com/zhboner/realm)
 - **多发行版支持** - 适配 Debian/Ubuntu、Alpine、CentOS/RHEL 系列，自动识别包管理器与 init 系统（systemd / OpenRC）
+- **服务自愈** - systemd/OpenRC 双端服务异常自动重启，内置熔断防止连续崩溃刷屏
 - **快速体验** - 一键安装快速轻量上手体验网络转发
 - **智能检测** - 自动检测系统架构、端口冲突,连接可用性
 
+- **转发协议选择** - 每条规则可选纯TCP/纯UDP/双栈（both 默认）；纯UDP自动降级 standard 并跳过 ws/tls 选择（transport 挂的 TCP ConnectOpts 对纯UDP无效）；状态标签显示 [纯TCP]/[纯UDP]，both 不显标签
 - **搭建隧道** - 双端realm架构支持 TLS,ws,wss,搭建隧道
 - **负载均衡** - 支持轮询、IP哈希等策略，可配置权重分配
 - **故障转移** - 使用系统工具,完成自动故障检测,保持轻量化
@@ -359,7 +361,8 @@ IP地址：MPTCP协议需要知道可以使用哪些IP地址建立子流
     ├── traffic_data.json                # 流量数据备份
     ├── vps_traffic.json                 # 整机流量采集数据
     ├── notifications/                   # 通知模块目录
-    │   └── telegram.sh                  # Telegram通知模块
+    │   ├── telegram.sh                  # Telegram通知模块
+    │   └── webhook.sh                   # Webhook通知模块(企业微信/飞书/钉钉)
     └── logs/                            # 日志目录
 
 中转网络链路测试（选择链路测试时下载）
@@ -375,9 +378,9 @@ MPTCP（启用MPTCP时创建）
 ## 🤝 技术支持
 
 - **其他开源项目：** [https://github.com/zywe03](https://github.com/zywe03)
-- **介绍主页：** [https://zywe.de](https://zywe.de)
+- **了解更多：** [https://zywe.de](https://zywe.de)
 - **问题反馈：** [GitHub Issues](https://github.com/zywe03/realm-xwPF/issues)
-- **纯闲聊群** [tg交流群](https://t.me/zywe_chat) 
+- **Linux.do** [https://linux.do/](https://linux.do/)
 
 ---
 

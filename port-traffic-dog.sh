@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-readonly SCRIPT_VERSION="1.4.1"
+readonly SCRIPT_VERSION="1.4.2"
 readonly SCRIPT_NAME="端口流量狗"
 readonly SCRIPT_PATH="$(realpath "$0")"
 readonly CONFIG_DIR="/etc/port-traffic-dog"
@@ -1597,7 +1597,7 @@ show_main_menu() {
     collect_vps_traffic
 
     echo -e "${BLUE}=== 端口流量狗 v$SCRIPT_VERSION ===${NC}"
-    echo -e "${GREEN}介绍主页:${NC}https://zywe.de | ${GREEN}项目开源:${NC}https://github.com/zywe03/realm-xwPF"
+    echo -e "${GREEN}了解更多:${NC}https://zywe.de | ${GREEN}项目开源:${NC}https://github.com/zywe03/realm-xwPF"
     echo -e "${GREEN}一只轻巧的‘守护犬’，时刻守护你的端口流量 | 快捷命令: dog${NC}"
     echo
 
@@ -4136,7 +4136,7 @@ format_status_message() {
     local daily_total=$(get_daily_total_traffic)
 
     local message="<b>${notification_icon} 端口流量狗 v${SCRIPT_VERSION}</b> | ⏰ ${timestamp}
-介绍主页:<code>https://zywe.de</code> | 项目开源:<code>https://github.com/zywe03/realm-xwPF</code>
+了解更多:<code>https://zywe.de</code> | 项目开源:<code>https://github.com/zywe03/realm-xwPF</code>
 一只轻巧的'守护犬'，时刻守护你的端口流量 | 快捷命令: dog
 ---
 $(format_vps_traffic_line "plain")
@@ -4159,7 +4159,7 @@ format_text_status_message() {
     local daily_total=$(get_daily_total_traffic)
 
     local message="${notification_icon} 端口流量狗 v${SCRIPT_VERSION} | ⏰ ${timestamp}
-介绍主页: https://zywe.de | 项目开源: https://github.com/zywe03/realm-xwPF
+了解更多: https://zywe.de | 项目开源: https://github.com/zywe03/realm-xwPF
 一只轻巧的'守护犬'，时刻守护你的端口流量 | 快捷命令: dog
 ---
 $(format_vps_traffic_line "plain")
@@ -4182,7 +4182,7 @@ format_markdown_status_message() {
     local daily_total=$(get_daily_total_traffic)
 
     local message="**${notification_icon} 端口流量狗 v${SCRIPT_VERSION}** | ⏰ ${timestamp}
-介绍主页: \`https://zywe.de\` | 项目开源: \`https://github.com/zywe03/realm-xwPF\`
+了解更多: \`https://zywe.de\` | 项目开源: \`https://github.com/zywe03/realm-xwPF\`
 一只轻巧的'守护犬'，时刻守护你的端口流量 | 快捷命令: dog
 ---
 $(format_vps_traffic_line "markdown")
@@ -4340,7 +4340,7 @@ main() {
                 ;;
             --version)
                 echo -e "${BLUE}$SCRIPT_NAME v$SCRIPT_VERSION${NC}"
-                echo -e "${GREEN}介绍主页:${NC} https://zywe.de"
+                echo -e "${GREEN}了解更多:${NC} https://zywe.de"
                 echo -e "${GREEN}项目开源:${NC} https://github.com/zywe03/realm-xwPF"
                 exit 0
                 ;;

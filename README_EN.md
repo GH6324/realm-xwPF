@@ -156,9 +156,11 @@ Select **1. Install & Configure**, then:
   - Bind specific entry or exit NIC on the relay (for multi-NIC setups)
   - More at [zhboner/realm](https://github.com/zhboner/realm)
 - **Multi-Distro Support** — Works on Debian/Ubuntu, Alpine, CentOS/RHEL and derivatives, auto-detects package manager and init system (systemd / OpenRC)
+- **Service Self-Healing** — Auto-restart on crash for both systemd and OpenRC units, with a built-in breaker to prevent log-flooding on repeated crashes
 - **Quick Start** — One-click install, lightweight, get up and running with network forwarding fast
 - **Smart Detection** — Auto-detects system architecture, port conflicts, and connection availability
 
+- **Forwarding Protocol Selection** — Per-rule choice of pure TCP / pure UDP / dual-stack (both, default); pure UDP auto-downgrades to standard and skips WS/TLS selection (the TCP ConnectOpts on transport are invalid for pure UDP); status label shows [TCP] / [UDP], both shows no label
 - **Tunnel Building** — Dual-Realm architecture with TLS, WS, WSS tunnel support
 - **Load Balancing** — Round-robin, IP hash, and configurable weight distribution
 - **Failover** — Automatic failure detection using native system tools, keeping things lightweight
@@ -357,7 +359,8 @@ Port Traffic Dog (downloaded when selected)
     ├── traffic_data.json                # Traffic data backup
     ├── vps_traffic.json                 # Whole-server traffic collection data
     ├── notifications/                   # Notification modules
-    │   └── telegram.sh                  # Telegram notification module
+    │   ├── telegram.sh                  # Telegram notification module
+    │   └── webhook.sh                   # Webhook notification module (WeCom / Feishu / DingTalk)
     └── logs/                            # Log directory
 
 Relay Network Link Test (downloaded when selected)
@@ -373,9 +376,9 @@ MPTCP (created when MPTCP is enabled)
 ## 🤝 Support
 
 - **More Projects:** [https://github.com/zywe03](https://github.com/zywe03)
-- **Homepage:** [https://zywe.de](https://zywe.de)
+- **Learn more:** [https://zywe.de](https://zywe.de)
 - **Bug Reports:** [GitHub Issues](https://github.com/zywe03/realm-xwPF/issues)
-- **Chat:** [Telegram Group](https://t.me/zywe_chat)
+- **Linux.do** [https://linux.do/](https://linux.do/)
 
 ---
 

@@ -47,8 +47,8 @@
 
 ### 通知系统
 - **独立模块分隔**: 同时启用两个,各自独立的间隔设置,任意禁用其中一个,不影响另一个
-- **Telegram 通知**：支持机器人推送
-- **webhook通知(企业wx 群)**: 支持机器人推送
+- **Telegram 通知**：支持机器人推送，可自定义 API Host 中转 api.telegram.org
+- **Webhook 通知(企业微信/飞书/钉钉)**：支持群机器人推送
 - **状态汇报**：可按间隔（1 分钟–24 小时）推送状态  
 - **扩展支持**：预留邮箱接口（敬请期待）  
 
@@ -86,7 +86,7 @@ wget -O port-traffic-dog.sh https://v6.gh-proxy.org/https://raw.githubuserconten
 - **主配置**: `/etc/port-traffic-dog/config.json` - 端口配置、通知设置等
 - **整机流量数据**: `/etc/port-traffic-dog/vps_traffic.json` - 整机流量采集数据
 - **日志目录**: `/etc/port-traffic-dog/logs/` - 运行日志和通知日志
-- **通知模块**: `/etc/port-traffic-dog/notifications/` - Telegram等通知脚本
+- **通知模块**: `/etc/port-traffic-dog/notifications/` - Telegram、Webhook(企业微信/飞书/钉钉)等通知脚本
 
 ## Telegram通知配置
 
@@ -109,11 +109,12 @@ wget -O port-traffic-dog.sh https://v6.gh-proxy.org/https://raw.githubuserconten
 - Bot Token
 - Chat ID
 - 服务器名称
+- Telegram API Host（可选，中转机连不上 api.telegram.org 时填反代/镜像地址，直连回车跳过）
 - 状态通知(可选间隔：1分钟到24小时)
 - 邀请自己的机器人到群组,然后在输入ID那里输入群组ID就可以在群组通知，，输入个人ID就个人通知
 
-## webhook(企业wx 群机器人)通知配置
+## webhook(企业微信/飞书/钉钉群机器人)通知配置
 
-1. 在企业wx 群中添加群机器人
-2. 获取机器人的 Webhook URL复制
-3. 粘贴到`请输入Webhook URL: ` 即可
+1. 在对应平台(企业微信/飞书/钉钉)的群中添加群机器人
+2. 获取机器人的 Webhook URL
+3. 脚本「1. 配置Webhook信息」中先选平台(企业微信/飞书/钉钉)，再粘贴 Webhook URL 与服务器名称

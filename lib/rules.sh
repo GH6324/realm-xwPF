@@ -672,8 +672,8 @@ edit_nat_server_config() {
     echo -e "${YELLOW}=== 转发协议配置 ===${NC}"
     echo "请选择转发协议:"
     echo -e "${GREEN}[1]${NC} TCP+UDP 双栈"
-    echo -e "${BLUE}[2]${NC} 仅 TCP"
-    echo -e "${YELLOW}[3]${NC} 仅 UDP"
+    echo -e "${GREEN}[2]${NC} 仅 TCP"
+    echo -e "${GREEN}[3]${NC} 仅 UDP"
     local proto_default="1"
     case "$current_protocol" in
         tcp) proto_default="2" ;;
@@ -860,8 +860,8 @@ edit_exit_server_config() {
     echo -e "${YELLOW}=== 转发协议配置 ===${NC}"
     echo "请选择转发协议:"
     echo -e "${GREEN}[1]${NC} TCP+UDP 双栈"
-    echo -e "${BLUE}[2]${NC} 仅 TCP"
-    echo -e "${YELLOW}[3]${NC} 仅 UDP"
+    echo -e "${GREEN}[2]${NC} 仅 TCP"
+    echo -e "${GREEN}[3]${NC} 仅 UDP"
     local proto_default="1"
     case "$current_protocol" in
         tcp) proto_default="2" ;;

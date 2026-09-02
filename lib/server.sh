@@ -1249,32 +1249,10 @@ done
         echo ""
     fi
 
-    # 转发协议选择：端口被复用时沿用现有协议，否则询问
-    if [ $port_status -ne 1 ]; then
-        echo ""
-        echo -e "${YELLOW}=== 转发协议配置 ===${NC}"
-        echo "请选择转发协议:"
-        echo -e "${GREEN}[1]${NC} TCP+UDP 双栈（默认）"
-        echo -e "${BLUE}[2]${NC} 仅 TCP"
-        echo -e "${YELLOW}[3]${NC} 仅 UDP"
-        echo ""
-        while true; do
-            read -p "请输入选择(回车默认1) [1-3]: " proto_choice
-            [ -z "$proto_choice" ] && proto_choice="1"
-            case "$proto_choice" in
-                1) PROTOCOL="both" ; echo -e "${GREEN}已选择: TCP+UDP 双栈${NC}"; break ;;
-                2) PROTOCOL="tcp"  ; echo -e "${GREEN}已选择: 仅 TCP${NC}"; break ;;
-                3) PROTOCOL="udp"  ; echo -e "${GREEN}已选择: 仅 UDP${NC}"; break ;;
-                *) echo -e "${RED}无效选择，请输入 1-3${NC}" ;;
-            esac
-        done
-        echo ""
-    fi
-
     # 配置远程服务器
     echo -e "${YELLOW}=== 出口服务器信息配置 ===${NC}"
     echo ""
-    
+
     while true; do
         read -p "出口服务器的IP地址或域名: " REMOTE_IP
         if [ -n "$REMOTE_IP" ]; then
@@ -1296,6 +1274,28 @@ done
             echo -e "${RED}无效端口号，请输入 1-65535 之间的数字，多端口用逗号分隔${NC}"
         fi
     done
+
+    # 转发协议选择：端口被复用时沿用现有协议，否则询问
+    if [ $port_status -ne 1 ]; then
+        echo ""
+        echo -e "${YELLOW}=== 转发协议配置 ===${NC}"
+        echo "请选择转发协议:"
+        echo -e "${GREEN}[1]${NC} TCP+UDP 双栈（默认）"
+        echo -e "${GREEN}[2]${NC} 仅 TCP"
+        echo -e "${GREEN}[3]${NC} 仅 UDP"
+        echo ""
+        while true; do
+            read -p "请输入选择(回车默认1) [1-3]: " proto_choice
+            [ -z "$proto_choice" ] && proto_choice="1"
+            case "$proto_choice" in
+                1) PROTOCOL="both" ; echo -e "${GREEN}已选择: TCP+UDP 双栈${NC}"; break ;;
+                2) PROTOCOL="tcp"  ; echo -e "${GREEN}已选择: 仅 TCP${NC}"; break ;;
+                3) PROTOCOL="udp"  ; echo -e "${GREEN}已选择: 仅 UDP${NC}"; break ;;
+                *) echo -e "${RED}无效选择，请输入 1-3${NC}" ;;
+            esac
+        done
+        echo ""
+    fi
 
     # 测试连通性
     local connectivity_ok=true
@@ -1635,8 +1635,8 @@ configure_exit_server() {
     echo -e "${YELLOW}=== 转发协议配置 ===${NC}"
     echo "请选择转发协议:"
     echo -e "${GREEN}[1]${NC} TCP+UDP 双栈（默认）"
-    echo -e "${BLUE}[2]${NC} 仅 TCP"
-    echo -e "${YELLOW}[3]${NC} 仅 UDP"
+    echo -e "${GREEN}[2]${NC} 仅 TCP"
+    echo -e "${GREEN}[3]${NC} 仅 UDP"
     echo ""
     while true; do
         read -p "请输入选择(回车默认1) [1-3]: " proto_choice

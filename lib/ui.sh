@@ -717,7 +717,7 @@ show_menu() {
     while true; do
         clear
         echo -e "${GREEN}=== xwPF Realm全功能一键脚本 $SCRIPT_VERSION ===${NC}"
-        echo -e "${GREEN}介绍主页:${NC}https://zywe.de | ${GREEN}项目开源:${NC}https://github.com/zywe03/realm-xwPF"
+        echo -e "${GREEN}了解更多:${NC}https://zywe.de | ${GREEN}项目开源:${NC}https://github.com/zywe03/realm-xwPF"
         echo -e "${GREEN}一个开箱即用、轻量可靠、灵活可控的 Realm 转发管理工具${NC}"
         echo -e "${GREEN}官方realm的全部功能+故障转移 | 快捷命令: pf${NC}"
 
