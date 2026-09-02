@@ -138,4 +138,4 @@ wget -O port-traffic-dog.sh https://v6.gh-proxy.org/https://raw.githubuserconten
 
 ## 💖 如果对你有帮助
 
-![zywe赞赏码](docs/zywe_赞赏码.jpg)
+<img src="docs/zywe_赞赏码.jpg" alt="zywe赞赏码" width="50%">

@@ -388,6 +388,6 @@ MPTCP（启用MPTCP时创建）
 
 ## 💖 如果对你有帮助
 
-![zywe赞赏码](docs/zywe_赞赏码.jpg)
+<img src="docs/zywe_赞赏码.jpg" alt="zywe赞赏码" width="50%">
 
 [![Star History Chart](https://star-history.dera.page/svg?repos=zywe03/realm-xwPF&type=Date)](https://star-history.dera.page/#zywe03/realm-xwPF&Date)

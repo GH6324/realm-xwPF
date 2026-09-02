@@ -386,6 +386,6 @@ MPTCP (created when MPTCP is enabled)
 
 ## 💖 If this helps you
 
-![zywe sponsor QR](docs/zywe_赞赏码.jpg)
+<img src="docs/zywe_赞赏码.jpg" alt="zywe sponsor QR" width="50%">
 
 [![Star History Chart](https://star-history.dera.page/svg?repos=zywe03/realm-xwPF&type=Date)](https://star-history.dera.page/#zywe03/realm-xwPF&Date)
