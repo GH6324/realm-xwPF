@@ -65,13 +65,6 @@ rules_management_menu() {
         echo -e "${GREEN}=== 转发配置管理 ===${NC}"
         echo ""
 
-        local status=$(svc_status_text)
-        if [ "$status" = "active" ]; then
-            echo -e "服务状态: ${GREEN}●${NC} 运行中"
-        else
-            echo -e "服务状态: ${RED}●${NC} 已停止"
-        fi
-
         local enabled_count=0
         local disabled_count=0
         if [ -d "$RULES_DIR" ]; then
@@ -86,6 +79,17 @@ rules_management_menu() {
                     fi
                 fi
             done
+        fi
+
+        # 服务状态：无规则且停止时提示先添加规则
+        local status=$(svc_status_text)
+        local total_count=$((enabled_count + disabled_count))
+        if [ "$status" = "active" ]; then
+            echo -e "服务状态: ${GREEN}●${NC} 运行中"
+        elif [ "$total_count" -eq 0 ]; then
+            echo -e "服务状态: ${RED}●${NC} 已停止（添加规则后启动）"
+        else
+            echo -e "服务状态: ${RED}●${NC} 已停止"
         fi
 
         if [ "$enabled_count" -gt 0 ] || [ "$disabled_count" -gt 0 ]; then
@@ -474,14 +478,6 @@ show_brief_status() {
         return
     fi
 
-    # 正常状态显示
-    local status=$(svc_status_text)
-    if [ "$status" = "active" ]; then
-        echo -e "服务状态: ${GREEN}●${NC} 运行中"
-    else
-        echo -e "服务状态: ${RED}●${NC} 已停止"
-    fi
-
     # 检查是否有多规则配置
     local has_rules=false
     local enabled_count=0
@@ -499,6 +495,17 @@ show_brief_status() {
                 fi
             fi
         done
+    fi
+
+    # 服务状态：无规则且停止时提示先添加规则
+    local status=$(svc_status_text)
+    local total_count=$((enabled_count + disabled_count))
+    if [ "$status" = "active" ]; then
+        echo -e "服务状态: ${GREEN}●${NC} 运行中"
+    elif [ "$total_count" -eq 0 ]; then
+        echo -e "服务状态: ${RED}●${NC} 已停止（添加规则后启动）"
+    else
+        echo -e "服务状态: ${RED}●${NC} 已停止"
     fi
 
     if [ "$has_rules" = true ] || [ "$disabled_count" -gt 0 ]; then
