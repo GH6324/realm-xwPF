@@ -758,7 +758,26 @@ generate_realm_config() {
 generate_service_file() {
     if [ "$INIT_SYSTEM" = "openrc" ]; then
         echo -e "${YELLOW}正在生成 OpenRC 服务文件...${NC}"
-        cat > /etc/init.d/realm <<'SVCEOF'
+        # supervise-daemon 提供崩溃自愈 + respawn 熔断；老版本 OpenRC 无此命令则降级为裸后台进程（无自愈）
+        if command -v supervise-daemon >/dev/null 2>&1; then
+            # supervise-daemon 只监控前台进程，realm 不作后台化，不能再设 command_background
+            # 防无限重启：delay×max 必须小于 period，否则熔断永远达不到（3s×5=15s < 60s）
+            cat > /etc/init.d/realm <<'SVCEOF'
+#!/sbin/openrc-run
+name="realm-xwpf"
+description="realm-xwpf forwarding"
+command="/usr/local/bin/realm"
+command_args="-c /etc/realm/config.json"
+pidfile="/run/${RC_SVCNAME}.pid"
+supervisor="supervise-daemon"
+respawn_delay=3
+respawn_max=5
+respawn_period=60
+depend() { need net; }
+SVCEOF
+            echo -e "${GREEN}✓ OpenRC 服务文件已生成${NC}"
+        else
+            cat > /etc/init.d/realm <<'SVCEOF'
 #!/sbin/openrc-run
 name="realm-xwpf"
 command="/usr/local/bin/realm"
@@ -767,19 +786,24 @@ command_background=true
 pidfile="/run/${RC_SVCNAME}.pid"
 depend() { need net; }
 SVCEOF
+            echo -e "${BLUE}ℹ 当前 OpenRC 版本无 supervise-daemon，服务可正常启停，仅无崩溃自动重启(建议升级 openrc 至 0.21+)${NC}"
+        fi
         chmod +x /etc/init.d/realm
-        echo -e "${GREEN}✓ OpenRC 服务文件已生成${NC}"
     else
         echo -e "${YELLOW}正在生成 systemd 服务文件...${NC}"
+        # Restart=always 覆盖所有崩溃路径；手动 stop 设 forbid_restart，always 也尊重，不影响菜单停止/重启
+        # StartLimitBurst/Interval 为 [Unit] 段熔断：60s 内 5 次启动超限即进 failed 停止，防配置错误无限刷屏
         cat > "$SYSTEMD_PATH" <<EOF
 [Unit]
 Description=realm-xwpf
 After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
 ExecStart=${REALM_PATH} -c ${CONFIG_PATH}
-Restart=on-failure
+Restart=always
 RestartSec=3s
 
 [Install]
