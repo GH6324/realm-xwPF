@@ -218,6 +218,7 @@ process_json() {
         local listen="" remote="" extra_remotes="" balance="" listen_transport="" remote_transport=""
         local rule_role="" rule_name="" listen_ip="" listen_port="" remote_host="" remote_port=""
         local transport_to_parse="" security_level="" tls_server_name="" ws_path="" ws_host=""
+        local protocol=""
 
         # 提取基本信息
         listen=$(echo "$endpoint" | jq -r '.listen // empty')
@@ -226,6 +227,35 @@ process_json() {
         balance=$(echo "$endpoint" | jq -r '.balance // empty')
         listen_transport=$(echo "$endpoint" | jq -r '.listen_transport // empty')
         remote_transport=$(echo "$endpoint" | jq -r '.remote_transport // empty')
+
+        # 推断转发协议：endpoint.network 字段级优先，缺省回退全局 .network，再缺省按 false
+        # 陷阱：jq 的 // 会把显式 false 当空，判缺失必须用 == null
+        # 全缺(network 全无)→both 用 xwPF 全局双栈顶着；no_tcp:true+use_udp:false 不转发任何流量→invalid 跳过
+        protocol=$(jq -r --argjson idx "$i" '
+            def eff($f):
+                if .endpoints[$idx].network[$f] != null then .endpoints[$idx].network[$f]
+                elif .network[$f] != null then .network[$f]
+                else false end;
+            # 四个字段全 null = 整个 network 都没声明，用全局双栈顶着
+            if (.network.no_tcp == null and .network.use_udp == null
+                and .endpoints[$idx].network.no_tcp == null
+                and .endpoints[$idx].network.use_udp == null)
+            then "both"
+            else
+            (eff("no_tcp")) as $nt | (eff("use_udp")) as $uu |
+            if      $nt == false and $uu == true  then "both"
+            elif    $nt == false and $uu == false then "tcp"
+            elif    $nt == true  and $uu == true  then "udp"
+            else "invalid" end
+            end' "$json_file" 2>/dev/null)
+
+        if [ -z "$protocol" ]; then
+            echo "警告: endpoint $i 的 network 字段格式异常，按双栈(both)导入"
+            protocol="both"
+        elif [ "$protocol" = "invalid" ]; then
+            echo "警告: endpoint $i 的 network 为 no_tcp=true/use_udp=false（不转发任何流量），跳过"
+            continue
+        fi
 
         if [ -z "$listen" ] || [ -z "$remote" ]; then
             echo "警告: endpoint $i 缺少必要字段，跳过"
@@ -265,6 +295,14 @@ process_json() {
         local transport_result=$(parse_transport_config "$transport_to_parse" "$rule_role")
         local security_level tls_server_name ws_path ws_host
         IFS='|' read -r security_level tls_server_name ws_path ws_host <<< "$transport_result"
+
+        # 纯 UDP 无 TCP 连接，ws/tls 加密传输挂在 TCP 上对纯 UDP 无效，强制降级 standard
+        # 与主脚本添加/编辑流程保持一致
+        if [ "$protocol" = "udp" ] && [ "$security_level" != "standard" ]; then
+            echo "警告: endpoint $i 为纯 UDP，ws/tls 加密传输仅对 TCP 生效，已降级为默认传输"
+            security_level="standard"
+            tls_server_name="" ws_path="" ws_host=""
+        fi
 
         # 收集所有目标地址（主地址 + 额外地址）
         local all_targets=("$remote")
@@ -352,6 +390,9 @@ MPTCP_MODE="off"
 
 # Proxy配置
 PROXY_MODE="off"
+
+# 转发协议
+PROTOCOL="$protocol"
 RULE_EOF
 
             if [ "$rule_role" = "1" ]; then
@@ -515,14 +556,21 @@ for rule_file in "$OUTPUT_DIR"/rule-*.conf; do
             balance_display="${balance_display}]"
         fi
 
+        # 协议标签：对齐主脚本 get_rule_status_display，both 常态不显示
+        protocol_display=""
+        case "${PROTOCOL:-both}" in
+            tcp) protocol_display=" | 协议: ${BLUE}[纯TCP]${NC}" ;;
+            udp) protocol_display=" | 协议: ${YELLOW}[纯UDP]${NC}" ;;
+        esac
+
         if [ "$RULE_ROLE" = "1" ]; then
             # 中转服务器
             echo -e "  • ${GREEN}$RULE_NAME${NC}: $LISTEN_PORT → $REMOTE_HOST:$REMOTE_PORT"
-            echo -e "    传输模式: ${YELLOW}$transport_display${NC}$balance_display"
+            echo -e "    传输模式: ${YELLOW}$transport_display${NC}$balance_display$protocol_display"
         else
             # 服务端服务器
             echo -e "  • ${GREEN}$RULE_NAME${NC}: $LISTEN_PORT → $FORWARD_TARGET"
-            echo -e "    传输模式: ${YELLOW}$transport_display${NC}$balance_display"
+            echo -e "    传输模式: ${YELLOW}$transport_display${NC}$balance_display$protocol_display"
         fi
     fi
 done

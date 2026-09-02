@@ -192,6 +192,7 @@ read_rule_file() {
         RULE_NOTE="${RULE_NOTE:-}"
         MPTCP_MODE="${MPTCP_MODE:-off}"
         PROXY_MODE="${PROXY_MODE:-off}"
+        PROTOCOL="${PROTOCOL:-both}"
         return 0
     else
         return 1
@@ -334,7 +335,16 @@ get_rule_status_display() {
         proxy_display=" | Proxy: ${proxy_color}$proxy_text${NC}"
     fi
 
-    echo -e "    安全: ${YELLOW}$security_display${NC}${mptcp_display}${proxy_display}${note_display}"
+    # 协议标签：both 是常态不显示，仅纯 TCP/纯 UDP 标注
+    local protocol="${PROTOCOL:-both}"
+    local protocol_display=""
+    if [ "$protocol" = "tcp" ]; then
+        protocol_display=" | 协议: ${BLUE}[纯TCP]${NC}"
+    elif [ "$protocol" = "udp" ]; then
+        protocol_display=" | 协议: ${YELLOW}[纯UDP]${NC}"
+    fi
+
+    echo -e "    安全: ${YELLOW}$security_display${NC}${mptcp_display}${proxy_display}${protocol_display}${note_display}"
 }
 
 display_single_rule_info() {
@@ -656,6 +666,47 @@ edit_nat_server_config() {
     sed -i "s/^REMOTE_HOST=.*/REMOTE_HOST=\"$new_remote_host\"/" "$rule_file"
     sed -i "s/^REMOTE_PORT=.*/REMOTE_PORT=\"$new_remote_port\"/" "$rule_file"
 
+    # 转发协议编辑：both 双栈是常态，纯 TCP/纯 UDP 才需要标注
+    local current_protocol="${PROTOCOL:-both}"
+    echo ""
+    echo -e "${YELLOW}=== 转发协议配置 ===${NC}"
+    echo "请选择转发协议:"
+    echo -e "${GREEN}[1]${NC} TCP+UDP 双栈"
+    echo -e "${BLUE}[2]${NC} 仅 TCP"
+    echo -e "${YELLOW}[3]${NC} 仅 UDP"
+    local proto_default="1"
+    case "$current_protocol" in
+        tcp) proto_default="2" ;;
+        udp) proto_default="3" ;;
+    esac
+    local new_protocol
+    while true; do
+        read -p "请输入选择(回车默认${GREEN}${proto_default}${NC}) [1-3]: " proto_choice
+        [ -z "$proto_choice" ] && proto_choice="$proto_default"
+        case "$proto_choice" in
+            1) new_protocol="both"  ; echo -e "${GREEN}已选择: TCP+UDP 双栈${NC}"; break ;;
+            2) new_protocol="tcp"   ; echo -e "${GREEN}已选择: 仅 TCP${NC}"; break ;;
+            3) new_protocol="udp"   ; echo -e "${GREEN}已选择: 仅 UDP${NC}"; break ;;
+            *) echo -e "${RED}无效选择，请输入 1-3${NC}" ;;
+        esac
+    done
+
+    # 纯 UDP 无 TCP 连接，ws/tls 等加密传输挂在 TCP 上对纯 UDP 无效，强制降级为 standard
+    if [ "$new_protocol" = "udp" ] && [ "$SECURITY_LEVEL" != "standard" ]; then
+        echo -e "${YELLOW}纯 UDP 不支持 ws/tls 加密传输，已自动切换为默认传输${NC}"
+        SECURITY_LEVEL="standard"
+        sed -i "s/^SECURITY_LEVEL=.*/SECURITY_LEVEL=\"standard\"/" "$rule_file"
+        sed -i "s|^TLS_SERVER_NAME=.*|TLS_SERVER_NAME=\"\"|" "$rule_file"
+        sed -i "s|^WS_PATH=.*|WS_PATH=\"\"|" "$rule_file"
+        sed -i "s|^WS_HOST=.*|WS_HOST=\"\"|" "$rule_file"
+    fi
+
+    if grep -q "^PROTOCOL=" "$rule_file"; then
+        sed -i "s/^PROTOCOL=.*/PROTOCOL=\"$new_protocol\"/" "$rule_file"
+    else
+        echo "PROTOCOL=\"$new_protocol\"" >> "$rule_file"
+    fi
+
     # 规则备注编辑
     local current_note="${RULE_NOTE:-}"
     echo -ne "规则备注(回车默认${GREEN}${current_note}${NC}): "
@@ -802,7 +853,50 @@ edit_exit_server_config() {
     
     sed -i "s/^LISTEN_PORT=.*/LISTEN_PORT=\"$new_listen_port\"/" "$rule_file"
     sed -i "s|^FORWARD_TARGET=.*|FORWARD_TARGET=\"${new_target_host}:${new_target_port}\"|" "$rule_file"
-    
+
+    # 转发协议编辑：both 双栈是常态，纯 TCP/纯 UDP 才需要标注
+    local current_protocol="${PROTOCOL:-both}"
+    echo ""
+    echo -e "${YELLOW}=== 转发协议配置 ===${NC}"
+    echo "请选择转发协议:"
+    echo -e "${GREEN}[1]${NC} TCP+UDP 双栈"
+    echo -e "${BLUE}[2]${NC} 仅 TCP"
+    echo -e "${YELLOW}[3]${NC} 仅 UDP"
+    local proto_default="1"
+    case "$current_protocol" in
+        tcp) proto_default="2" ;;
+        udp) proto_default="3" ;;
+    esac
+    local new_protocol
+    while true; do
+        read -p "请输入选择(回车默认${GREEN}${proto_default}${NC}) [1-3]: " proto_choice
+        [ -z "$proto_choice" ] && proto_choice="$proto_default"
+        case "$proto_choice" in
+            1) new_protocol="both"  ; echo -e "${GREEN}已选择: TCP+UDP 双栈${NC}"; break ;;
+            2) new_protocol="tcp"   ; echo -e "${GREEN}已选择: 仅 TCP${NC}"; break ;;
+            3) new_protocol="udp"   ; echo -e "${GREEN}已选择: 仅 UDP${NC}"; break ;;
+            *) echo -e "${RED}无效选择，请输入 1-3${NC}" ;;
+        esac
+    done
+
+    # 纯 UDP 无 TCP 连接，ws/tls 等加密传输挂在 TCP 上对纯 UDP 无效，强制降级为 standard
+    if [ "$new_protocol" = "udp" ] && [ "$SECURITY_LEVEL" != "standard" ]; then
+        echo -e "${YELLOW}纯 UDP 不支持 ws/tls 加密传输，已自动切换为默认传输${NC}"
+        SECURITY_LEVEL="standard"
+        sed -i "s/^SECURITY_LEVEL=.*/SECURITY_LEVEL=\"standard\"/" "$rule_file"
+        sed -i "s|^TLS_SERVER_NAME=.*|TLS_SERVER_NAME=\"\"|" "$rule_file"
+        sed -i "s|^TLS_CERT_PATH=.*|TLS_CERT_PATH=\"\"|" "$rule_file"
+        sed -i "s|^TLS_KEY_PATH=.*|TLS_KEY_PATH=\"\"|" "$rule_file"
+        sed -i "s|^WS_PATH=.*|WS_PATH=\"\"|" "$rule_file"
+        sed -i "s|^WS_HOST=.*|WS_HOST=\"\"|" "$rule_file"
+    fi
+
+    if grep -q "^PROTOCOL=" "$rule_file"; then
+        sed -i "s/^PROTOCOL=.*/PROTOCOL=\"$new_protocol\"/" "$rule_file"
+    else
+        echo "PROTOCOL=\"$new_protocol\"" >> "$rule_file"
+    fi
+
     # 更新或添加 RULE_NOTE 字段
     if grep -q "^RULE_NOTE=" "$rule_file"; then
         sed -i "s|^RULE_NOTE=.*|RULE_NOTE=\"$new_note\"|" "$rule_file"
@@ -854,6 +948,7 @@ interactive_add_rule() {
     local ORIG_TLS_SERVER_NAME="$TLS_SERVER_NAME"
     local ORIG_TLS_CERT_PATH="$TLS_CERT_PATH"
     local ORIG_TLS_KEY_PATH="$TLS_KEY_PATH"
+    local ORIG_PROTOCOL="$PROTOCOL"
 
     ROLE="$RULE_ROLE"
 
@@ -898,6 +993,7 @@ interactive_add_rule() {
     TLS_SERVER_NAME="$ORIG_TLS_SERVER_NAME"
     TLS_CERT_PATH="$ORIG_TLS_CERT_PATH"
     TLS_KEY_PATH="$ORIG_TLS_KEY_PATH"
+    PROTOCOL="$ORIG_PROTOCOL"
 
     echo ""
 

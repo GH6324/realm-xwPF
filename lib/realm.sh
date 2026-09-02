@@ -327,6 +327,7 @@ generate_endpoints_from_rules() {
     declare -A port_configs
     declare -A port_weights
     declare -A port_roles
+    declare -A port_protocols
 
     # 第一步：收集所有启用的规则并按端口分组（不进行故障转移过滤）
     declare -A port_rule_files
@@ -334,9 +335,11 @@ generate_endpoints_from_rules() {
         if [ -f "$rule_file" ]; then
             if read_rule_file "$rule_file" && [ "$ENABLED" = "true" ]; then
                 local port_key="$LISTEN_PORT"
+                local rule_protocol="${PROTOCOL:-both}"
 
                 # 存储端口配置（使用第一个规则的配置作为基准）
                 if [ -z "${port_configs[$port_key]}" ]; then
+                    port_protocols[$port_key]="$rule_protocol"
                     # 根据角色决定默认监听IP
                     local default_listen_ip
                     if [ "$RULE_ROLE" = "2" ]; then
@@ -353,6 +356,10 @@ generate_endpoints_from_rules() {
                 elif [ "${port_roles[$port_key]}" != "$RULE_ROLE" ]; then
                     # 检测到同一端口有不同角色的规则，跳过此规则
                     echo -e "${YELLOW}警告: 端口 $port_key 已被角色 ${port_roles[$port_key]} 的规则占用，跳过角色 $RULE_ROLE 的规则${NC}" >&2
+                    continue
+                elif [ "${port_protocols[$port_key]}" != "$rule_protocol" ]; then
+                    # 同端口不同转发协议，协议必须一致，跳过冲突规则
+                    echo -e "${YELLOW}警告: 端口 $port_key 协议为 ${port_protocols[$port_key]}，跳过协议 $rule_protocol 的规则${NC}" >&2
                     continue
                 fi
 
@@ -593,120 +600,68 @@ generate_endpoints_from_rules() {
             $transport_config"
         fi
 
-        # 添加MPTCP网络配置 - 从对应的规则文件读取MPTCP设置
-        local mptcp_config=""
+        # 构建局部 network 块：协议、MPTCP、Proxy 字段累加后一次性 emit
+        # 协议默认 both 不写字段（继承全局双栈）；MPTCP/Proxy 默认 off 不写字段
+        # 三类字段同块，realm 按 take_field 逐字段取值，互不覆盖
         local rule_file_for_port="${port_rule_files[$port_key]}"
+        local network_fields=""
 
         if [ -f "$rule_file_for_port" ]; then
-            # 临时保存当前变量状态
-            local saved_vars=$(declare -p RULE_ID RULE_NAME MPTCP_MODE 2>/dev/null || true)
+            # 临时保存会被 read_rule_file 覆盖的变量状态
+            local saved_vars=$(declare -p RULE_ID RULE_NAME PROTOCOL MPTCP_MODE PROXY_MODE 2>/dev/null || true)
 
-            # 读取该端口对应的规则文件
+            # 读取该端口对应的规则文件（一次拿到协议/MPTCP/Proxy 三个字段）
             if read_rule_file "$rule_file_for_port"; then
+                local rule_protocol="${PROTOCOL:-both}"
                 local mptcp_mode="${MPTCP_MODE:-off}"
-                local send_mptcp="false"
-                local accept_mptcp="false"
+                local proxy_mode="${PROXY_MODE:-off}"
 
-                case "$mptcp_mode" in
-                    "send")
-                        send_mptcp="true"
+                # 协议字段：仅非 both 写入，both 继承全局
+                case "$rule_protocol" in
+                    "tcp")
+                        network_fields="\"no_tcp\": false, \"use_udp\": false"
                         ;;
-                    "accept")
-                        accept_mptcp="true"
-                        ;;
-                    "both")
-                        send_mptcp="true"
-                        accept_mptcp="true"
+                    "udp")
+                        network_fields="\"no_tcp\": true, \"use_udp\": true"
                         ;;
                 esac
 
-                # 只有在需要MPTCP时才添加network配置
-                if [ "$send_mptcp" = "true" ] || [ "$accept_mptcp" = "true" ]; then
-                    mptcp_config=",
-            \"network\": {
-                \"send_mptcp\": $send_mptcp,
-                \"accept_mptcp\": $accept_mptcp
-            }"
+                # MPTCP 字段
+                local send_mptcp="false"
+                local accept_mptcp="false"
+                case "$mptcp_mode" in
+                    "send")   send_mptcp="true" ;;
+                    "accept") accept_mptcp="true" ;;
+                    "both")   send_mptcp="true"; accept_mptcp="true" ;;
+                esac
+                if [ "$send_mptcp" = "true" ]; then
+                    [ -n "$network_fields" ] && network_fields="$network_fields, "
+                    network_fields="${network_fields}\"send_mptcp\": $send_mptcp"
                 fi
-            fi
+                if [ "$accept_mptcp" = "true" ]; then
+                    [ -n "$network_fields" ] && network_fields="$network_fields, "
+                    network_fields="${network_fields}\"accept_mptcp\": $accept_mptcp"
+                fi
 
-            # 恢复变量状态（如果有保存的话）
-            if [ -n "$saved_vars" ]; then
-                eval "$saved_vars" 2>/dev/null || true
-            fi
-        fi
-
-        # 添加Proxy网络配置 - 从对应的规则文件读取Proxy设置
-        local proxy_config=""
-        if [ -f "$rule_file_for_port" ]; then
-            # 临时保存当前变量状态
-            local saved_vars=$(declare -p RULE_ID RULE_NAME PROXY_MODE 2>/dev/null || true)
-
-            # 读取该端口对应的规则文件
-            if read_rule_file "$rule_file_for_port"; then
-                local proxy_mode="${PROXY_MODE:-off}"
+                # Proxy 字段
                 local send_proxy="false"
                 local accept_proxy="false"
                 local send_proxy_version="2"
-
                 case "$proxy_mode" in
-                    "v1_send")
-                        send_proxy="true"
-                        send_proxy_version="1"
-                        ;;
-                    "v1_accept")
-                        accept_proxy="true"
-                        send_proxy_version="1"
-                        ;;
-                    "v1_both")
-                        send_proxy="true"
-                        accept_proxy="true"
-                        send_proxy_version="1"
-                        ;;
-                    "v2_send")
-                        send_proxy="true"
-                        send_proxy_version="2"
-                        ;;
-                    "v2_accept")
-                        accept_proxy="true"
-                        send_proxy_version="2"
-                        ;;
-                    "v2_both")
-                        send_proxy="true"
-                        accept_proxy="true"
-                        send_proxy_version="2"
-                        ;;
+                    "v1_send")   send_proxy="true"; send_proxy_version="1" ;;
+                    "v1_accept") accept_proxy="true"; send_proxy_version="1" ;;
+                    "v1_both")   send_proxy="true"; accept_proxy="true"; send_proxy_version="1" ;;
+                    "v2_send")   send_proxy="true" ;;
+                    "v2_accept") accept_proxy="true" ;;
+                    "v2_both")   send_proxy="true"; accept_proxy="true" ;;
                 esac
-
-                # 只有在需要Proxy时才添加配置
-                if [ "$send_proxy" = "true" ] || [ "$accept_proxy" = "true" ]; then
-                    local proxy_fields=""
-                    if [ "$send_proxy" = "true" ]; then
-                        proxy_fields="\"send_proxy\": $send_proxy,
-                \"send_proxy_version\": $send_proxy_version"
-                    fi
-                    if [ "$accept_proxy" = "true" ]; then
-                        if [ -n "$proxy_fields" ]; then
-                            proxy_fields="$proxy_fields,
-                \"accept_proxy\": $accept_proxy,
-                \"accept_proxy_timeout\": 5"
-                        else
-                            proxy_fields="\"accept_proxy\": $accept_proxy,
-                \"accept_proxy_timeout\": 5"
-                        fi
-                    fi
-
-                    if [ -n "$mptcp_config" ]; then
-                        # 如果已有MPTCP配置，在network内添加Proxy配置
-                        proxy_config=",
-                $proxy_fields"
-                    else
-                        # 如果没有MPTCP配置，创建新的network配置
-                        proxy_config=",
-            \"network\": {
-                $proxy_fields
-            }"
-                    fi
+                if [ "$send_proxy" = "true" ]; then
+                    [ -n "$network_fields" ] && network_fields="$network_fields, "
+                    network_fields="${network_fields}\"send_proxy\": $send_proxy, \"send_proxy_version\": $send_proxy_version"
+                fi
+                if [ "$accept_proxy" = "true" ]; then
+                    [ -n "$network_fields" ] && network_fields="$network_fields, "
+                    network_fields="${network_fields}\"accept_proxy\": $accept_proxy, \"accept_proxy_timeout\": 5"
                 fi
             fi
 
@@ -716,17 +671,13 @@ generate_endpoints_from_rules() {
             fi
         fi
 
-        # 合并MPTCP和Proxy配置
+        # 非空才写局部 network 块，否则 endpoint 不带 network，继承全局
         local network_config=""
-        if [ -n "$mptcp_config" ] && [ -n "$proxy_config" ]; then
-            # 两者都有，合并到一个network块中
-            network_config=$(echo "$mptcp_config" | sed 's/}//')
-            network_config="$network_config$proxy_config
+        if [ -n "$network_fields" ]; then
+            network_config=",
+            \"network\": {
+                $network_fields
             }"
-        elif [ -n "$mptcp_config" ]; then
-            network_config="$mptcp_config"
-        elif [ -n "$proxy_config" ]; then
-            network_config="$proxy_config"
         fi
 
         endpoint_config="$endpoint_config$network_config
