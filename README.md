@@ -13,11 +13,11 @@
 
 ### xwPF.sh realm转发脚本
 
-![81ce7ea9e40068f6fda04b66ca3bd1ff.gif](https://i.mji.rip/2025/12/12/81ce7ea9e40068f6fda04b66ca3bd1ff.gif)
+![xwPF主脚本界面](docs/xwpf主脚本.gif)
 
 ### 端口流量狗
 
-![cc59017896d277a8b35109ae44eac977.gif](https://i.mji.rip/2025/12/12/cc59017896d277a8b35109ae44eac977.gif)
+![端口流量狗界面](docs/流量狗.gif)
 
 ### 中转网络链路测试脚本
 ```
@@ -186,7 +186,7 @@ bash /usr/local/bin/xwPF.sh
 
 所以整个链路的加密协议由出口机业务软件决定
 
-![e3c0a9ebcee757b95663fc73adc4e880.png](https://i.mji.rip/2025/07/17/e3c0a9ebcee757b95663fc73adc4e880.png)
+![单端转发架构](docs/单端转发架构.png)
 
 </details>
 
@@ -199,7 +199,7 @@ bash /usr/local/bin/xwPF.sh
 
 #### 所以中转机realm选择的加密,伪装域名等等,必须与落地机一致,否则无法解密
 
-![4c1f0d860cd89ca79f4234dd23f81316.png](https://i.mji.rip/2025/07/17/4c1f0d860cd89ca79f4234dd23f81316.png)
+![双端隧道架构](docs/双端隧道架构.png)
 
 </details>
 
@@ -207,10 +207,10 @@ bash /usr/local/bin/xwPF.sh
 <summary><strong>负载均衡+故障转移</strong></summary>
 
 - 同一端口转发有多个落地机
-![a9f7c94e9995022557964011d35c3ad4.png](https://i.mji.rip/2025/07/15/a9f7c94e9995022557964011d35c3ad4.png)
+![负载均衡](docs/负载均衡.png)
 
 - 前置>多中转>单落地
-![2cbc533ade11a8bcbbe63720921e9e05.png](https://i.mji.rip/2025/07/17/2cbc533ade11a8bcbbe63720921e9e05.png)
+![前置多中转单落地](docs/前置多中转单落地.png)
 
 - `轮询`模式 (roundrobin)
 
@@ -385,5 +385,9 @@ MPTCP（启用MPTCP时创建）
 ---
 
 **⭐ 如果这个项目对您有帮助，请给个 Star 支持一下！**
+
+## 💖 如果对你有帮助
+
+![zywe赞赏码](docs/zywe_赞赏码.jpg)
 
 [![Star History Chart](https://star-history.dera.page/svg?repos=zywe03/realm-xwPF&type=Date)](https://star-history.dera.page/#zywe03/realm-xwPF&Date)
