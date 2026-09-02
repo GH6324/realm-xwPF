@@ -199,6 +199,8 @@ EOF
     migrate_ports_schema
     # 整机流量默认开启：幂等补建伪端口配置与采集 cron（全新安装即有，老版本升级自动迁移）
     ensure_vps_port_config
+    # 截止日期巡检 cron：到期当日 00:05 起阻断；漏跑（关机）由 @reboot 自恢复兜底
+    setup_expiry_check_cron
     # 与 cron 推送路径共用带锁的自愈入口，避免交互恢复和定时恢复并发把规则加双份
     ensure_monitoring_state
 }
@@ -219,6 +221,23 @@ ensure_vps_port_config() {
         log_notification "整机流量监控已启用"
     fi
     setup_vps_collect_cron
+}
+
+
+# 每天 00:05 检查截止日期并应用阻断
+setup_expiry_check_cron() {
+    local temp_cron=$(mktemp)
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗截止日期检查" > "$temp_cron" || true
+    echo "5 0 * * * $SCRIPT_PATH --check-expiry >/dev/null 2>&1  # 端口流量狗截止日期检查" >> "$temp_cron"
+    crontab "$temp_cron" 2>/dev/null || true
+    rm -f "$temp_cron"
+}
+
+remove_expiry_check_cron() {
+    local temp_cron=$(mktemp)
+    crontab -l 2>/dev/null | grep -v "# 端口流量狗截止日期检查" > "$temp_cron" || true
+    crontab "$temp_cron" 2>/dev/null || true
+    rm -f "$temp_cron"
 }
 
 # 每分钟采集 cron：增量统计的窗口粒度，掉一条 cron 最多丢一分钟流量
@@ -698,6 +717,9 @@ restore_all_monitoring_rules() {
             fi
         fi
 
+        # 恢复截止日期阻断
+        check_and_apply_expiry "$port"
+
         setup_port_auto_reset_cron "$port"
     done
 }
@@ -735,16 +757,17 @@ get_port_status_label() {
         .bandwidth_limit.rate // "unlimited",
         (.quota.enabled // true),
         .quota.monthly_limit // "unlimited",
-        (.quota.reset_day // "null")
+        (.quota.reset_day // "null"),
+        (.expiry.expire_date // null)
     ] | @tsv' 2>/dev/null) || fields=""
 
-    local remark billing_mode limit_enabled rate_limit quota_enabled monthly_limit reset_day_raw
+    local remark billing_mode limit_enabled rate_limit quota_enabled monthly_limit reset_day_raw expire_date_raw
     if [ -n "$fields" ]; then
-        IFS=$'\t' read -r _sentinel remark billing_mode limit_enabled rate_limit quota_enabled monthly_limit reset_day_raw <<< "$fields"
+        IFS=$'\t' read -r _sentinel remark billing_mode limit_enabled rate_limit quota_enabled monthly_limit reset_day_raw expire_date_raw <<< "$fields"
         [ "$remark" = $'\x01' ] && remark=""
     else
         remark=""; billing_mode="double"; limit_enabled="false"
-        rate_limit="unlimited"; quota_enabled="true"; monthly_limit="unlimited"; reset_day_raw="null"
+        rate_limit="unlimited"; quota_enabled="true"; monthly_limit="unlimited"; reset_day_raw="null"; expire_date_raw="null"
     fi
     local reset_day="null"
     
@@ -802,6 +825,16 @@ get_port_status_label() {
 
     if [ "$limit_enabled" = "true" ] && [ "$rate_limit" != "unlimited" ]; then
         status_tags+=("[限制带宽${rate_limit}]")
+    fi
+
+    if [ "$expire_date_raw" != "null" ] && [ -n "$expire_date_raw" ]; then
+        local today_bj
+        today_bj=$(get_beijing_time '+%Y-%m-%d')
+        if [[ "$today_bj" > "$expire_date_raw" || "$today_bj" == "$expire_date_raw" ]]; then
+            status_tags+=("[已截止]")
+        else
+            status_tags+=("[截止${expire_date_raw}]")
+        fi
     fi
 
     if [ ${#status_tags[@]} -gt 0 ]; then
@@ -1288,6 +1321,9 @@ get_counter_name() {  # $1=counter_key $2=in|out
 }
 get_quota_name() {    # $1=counter_key
     echo "port_${1}_quota"
+}
+get_expiry_name() {   # $1=counter_key，规则 comment 标识，remove/check 按此匹配
+    echo "expiry_block_$1"
 }
 get_tc_class_id() {   # $1=rule_id（数值）
     echo "1:$(printf '%x' "$1")"
@@ -1864,6 +1900,7 @@ remove_port_monitoring() {
         for port in "${ports_to_delete[@]}"; do
             remove_nftables_rules "$port"
             remove_nftables_quota "$port"
+            remove_expiry_block "$port"
             remove_tc_limit "$port"
             update_config "del(.ports.\"$port\")"
 
@@ -2264,14 +2301,16 @@ manage_traffic_limits() {
     echo "1. 设置端口带宽限制（速率控制）"
     echo "2. 设置端口流量配额（总量控制）"
     echo "3. 修改端口统计方式（双向/单向）"
+    echo "4. 设置端口截止日期（到期阻断）"
     echo "0. 返回主菜单"
     echo
-    read -p "请选择操作 [0-3]: " choice
+    read -p "请选择操作 [0-4]: " choice
 
     case $choice in
         1) set_port_bandwidth_limit ;;
         2) set_port_quota_limit ;;
         3) change_port_billing_mode ;;
+        4) set_port_expiry_date ;;
         0) show_main_menu ;;
         *) echo -e "${RED}无效选择${NC}"; sleep 1; manage_traffic_limits ;;
     esac
@@ -2476,6 +2515,214 @@ remove_nftables_quota() {
 # 需要挂限速的真实网卡：排除回环/ifb 自身/容器与虚拟网桥/隧道。
 # 出向和入向都必须覆盖全部真实网卡——回复包从连接进入的网卡发出，
 # 只挂默认路由网卡时，多网卡 VPS 的另一个网卡会完全绕过限速
+
+validate_expiry_date() {
+    local input="$1"
+    if [ "$input" = "0" ]; then
+        return 0
+    fi
+    # 格式检查 YYYY-MM-DD
+    if ! [[ "$input" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+        return 1
+    fi
+    # 合法性校验
+    date -d "$input" >/dev/null 2>&1 || return 1
+    return 0
+}
+
+set_port_expiry_date() {
+    echo -e "${BLUE}=== 设置端口截止日期 ===${NC}"
+    echo
+
+    local active_ports=($(get_active_ports))
+    if ! show_port_list; then
+        sleep 2
+        manage_traffic_limits
+        return
+    fi
+    echo
+
+    read_user_choice manage_traffic_limits "请选择要设置截止日期的端口（多端口使用逗号,分隔） [0返回,1-${#active_ports[@]}]: " choice_input || return
+
+    local valid_choices=()
+    local ports_to_set=()
+    parse_multi_choice_input "$choice_input" "${#active_ports[@]}" valid_choices
+
+    for choice in "${valid_choices[@]}"; do
+        local port=${active_ports[$((choice-1))]}
+        # 排除整机伪端口
+        if [ "$port" = "$VPS_PORT_ID" ]; then
+            echo -e "${YELLOW}整机流量不支持设置截止日期${NC}"
+            continue
+        fi
+        ports_to_set+=("$port")
+    done
+
+    if [ ${#ports_to_set[@]} -eq 0 ]; then
+        echo -e "${RED}没有有效的端口可设置截止日期${NC}"
+        sleep 2
+        set_port_expiry_date
+        return
+    fi
+
+    echo
+    local display_list
+    for port in "${ports_to_set[@]}"; do
+        display_list="${display_list:+$display_list,}$(get_port_display_name "$port")"
+    done
+
+    while true; do
+        echo "为 $display_list 设置截止日期 (格式: YYYY-MM-DD，输入 0 取消截止限制):"
+        echo "(多端口分别设置请用逗号,分隔；输入单个值将应用到所有选择的端口):"
+        read -p "截止日期: " expiry_input
+
+        if [ -z "$expiry_input" ]; then
+            echo -e "${YELLOW}输入不能为空，请输入日期或 0${NC}"
+            continue
+        fi
+
+        local EXPIRIES=()
+        parse_comma_separated_input "$expiry_input" EXPIRIES
+
+        local invalid=false
+        for exp in "${EXPIRIES[@]}"; do
+            if ! validate_expiry_date "$exp"; then
+                echo -e "${RED}日期格式错误: $exp，请使用 YYYY-MM-DD 格式（如 2026-12-31）或 0 取消${NC}"
+                invalid=true
+                break
+            fi
+        done
+        [ "$invalid" = true ] && continue
+
+        expand_single_value_to_array EXPIRIES ${#ports_to_set[@]}
+        if [ ${#EXPIRIES[@]} -ne ${#ports_to_set[@]} ]; then
+            echo -e "${RED}截止日期数量与端口数量不匹配${NC}"
+            continue
+        fi
+
+        break
+    done
+
+    for i in "${!ports_to_set[@]}"; do
+        local port="${ports_to_set[$i]}"
+        local expiry_val="${EXPIRIES[$i]}"
+
+        if [ "$expiry_val" = "0" ]; then
+            update_config "del(.ports.\"$port\".expiry)"
+            remove_expiry_block "$port"
+            echo -e "${GREEN}$(get_port_display_name "$port") 已取消截止日期限制${NC}"
+            log_notification "$(get_port_display_name "$port") 已取消截止日期限制"
+        else
+            update_config ".ports.\"$port\".expiry = {\"expire_date\": \"$expiry_val\"}"
+            check_and_apply_expiry "$port"
+            echo -e "${GREEN}$(get_port_display_name "$port") 截止日期设置成功: $expiry_val${NC}"
+            log_notification "$(get_port_display_name "$port") 截止日期设置为 $expiry_val"
+        fi
+    done
+
+    sleep 2
+    manage_traffic_limits
+}
+
+apply_expiry_block() {
+    local port=$1
+    [ "$port" = "$VPS_PORT_ID" ] && return 0
+
+    NFT_TABLE_CACHE=""
+    local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
+    local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
+    local counter_key=$(get_counter_key "$port")
+    local expiry_comment=$(get_expiry_name "$counter_key")
+
+    # 幂等：先清旧规则
+    remove_expiry_block "$port"
+
+    while IFS= read -r sel; do
+        [ -z "$sel" ] && continue
+        # 全双向阻断：在链头部插入 drop 并带 comment 标识，便于精准删除
+        nft insert rule $family $table_name input tcp dport $sel drop comment "$expiry_comment" 2>/dev/null || true
+        nft insert rule $family $table_name input udp dport $sel drop comment "$expiry_comment" 2>/dev/null || true
+        nft insert rule $family $table_name forward tcp dport $sel drop comment "$expiry_comment" 2>/dev/null || true
+        nft insert rule $family $table_name forward udp dport $sel drop comment "$expiry_comment" 2>/dev/null || true
+        nft insert rule $family $table_name output tcp sport $sel drop comment "$expiry_comment" 2>/dev/null || true
+        nft insert rule $family $table_name output udp sport $sel drop comment "$expiry_comment" 2>/dev/null || true
+        nft insert rule $family $table_name forward tcp sport $sel drop comment "$expiry_comment" 2>/dev/null || true
+        nft insert rule $family $table_name forward udp sport $sel drop comment "$expiry_comment" 2>/dev/null || true
+    done < <(port_selectors "$port")
+}
+
+remove_expiry_block() {
+    local port=$1
+    [ "$port" = "$VPS_PORT_ID" ] && return 0
+
+    NFT_TABLE_CACHE=""
+    local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
+    local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
+    local counter_key=$(get_counter_key "$port")
+    local expiry_comment=$(get_expiry_name "$counter_key")
+
+    local handles=()
+    mapfile -t handles < <(nft -a list table $family $table_name 2>/dev/null | \
+        grep "comment \"$expiry_comment\"" | \
+        sed -n 's/.*# handle \([0-9]\+\)$/\1/p' || true)
+
+    for handle in "${handles[@]}"; do
+        for chain in input output forward; do
+            if nft delete rule $family $table_name $chain handle $handle 2>/dev/null; then
+                break
+            fi
+        done
+    done
+}
+
+check_and_apply_expiry() {
+    local port=$1
+    [ "$port" = "$VPS_PORT_ID" ] && return 0
+
+    local expire_date=$(jq -r ".ports.\"$port\".expiry.expire_date // empty" "$CONFIG_FILE" 2>/dev/null)
+    if [ -z "$expire_date" ] || [ "$expire_date" = "null" ]; then
+        remove_expiry_block "$port"
+        return 0
+    fi
+
+    local today_bj
+    today_bj=$(get_beijing_time '+%Y-%m-%d')
+    local table_name=$(jq -r '.nftables.table_name' "$CONFIG_FILE")
+    local family=$(jq -r '.nftables.family' "$CONFIG_FILE")
+    local counter_key=$(get_counter_key "$port")
+    local expiry_comment=$(get_expiry_name "$counter_key")
+
+    # 通过表快照判断是否已阻断：grep -q 早退会触发 nft SIGPIPE，在 pipefail 下
+    # 使整个管道退出码非0，用 grep -c 取匹配数隔离，只看 grep 自身返回值
+    local is_blocked=false
+    local block_count
+    block_count=$(nft list table $family $table_name 2>/dev/null | grep -c "comment \"$expiry_comment\"" || true)
+    if [ "${block_count:-0}" -gt 0 ]; then
+        is_blocked=true
+    fi
+
+    if [[ "$today_bj" > "$expire_date" || "$today_bj" == "$expire_date" ]]; then
+        if [ "$is_blocked" = true ]; then
+            return 0
+        fi
+        apply_expiry_block "$port"
+        log_notification "$(get_port_display_name "$port") 已达截止日期 ($expire_date)，连接已阻断"
+    else
+        # 未到期：之前处于阻断状态（例如用户延期了日期），解除阻断
+        if [ "$is_blocked" = true ]; then
+            remove_expiry_block "$port"
+            log_notification "$(get_port_display_name "$port") 截止日期已调整为 ($expire_date)，阻断已解除"
+        fi
+    fi
+}
+
+check_all_expiry() {
+    local active_ports=($(get_monitored_ports))
+    for port in "${active_ports[@]}"; do
+        check_and_apply_expiry "$port"
+    done
+}
+
 list_shaping_interfaces() {
     ls /sys/class/net | grep -v -E "^(lo|ifb|docker0|br-.*|veth.*|virbr.*|wg.*|tun.*|tap.*)$"
 }
@@ -3646,6 +3893,7 @@ uninstall_script() {
         remove_wecom_notification_cron 2>/dev/null || true
         remove_restore_cron 2>/dev/null || true
         remove_vps_collect_cron 2>/dev/null || true
+        remove_expiry_check_cron 2>/dev/null || true
 
         rm -rf "$CONFIG_DIR" 2>/dev/null || true
         rm -f "/usr/local/bin/$SHORTCUT_COMMAND" 2>/dev/null || true
@@ -4005,6 +4253,11 @@ main() {
                 collect_vps_traffic
                 exit 0
                 ;;
+            --check-expiry)
+                ensure_monitoring_state
+                check_all_expiry
+                exit 0
+                ;;
             --reset-port)
                 if [ $# -lt 2 ]; then
                     echo -e "${RED}错误：--reset-port 需要指定端口号${NC}"
@@ -4086,6 +4339,7 @@ main() {
                 echo "  --reset-port PORT         重置指定监控项流量（支持端口/端口段/端口组）"
                 echo "  --collect-vps-traffic     采集整机流量(整机流量监控用)"
                 echo "  --restore-monitoring      重建丢失的监控规则(开机自恢复用)"
+                echo "  --check-expiry            检查端口截止日期并阻断到期端口(每日cron用)"
                 echo
                 echo -e "${GREEN}快捷命令: $SHORTCUT_COMMAND${NC}"
                 exit 1
