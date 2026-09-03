@@ -7,7 +7,7 @@
 ## 脚本界面预览
 
 **主界面**
-![端口流量狗主界面](docs/流量狗.gif)
+![端口流量狗主界面](./流量狗.gif)
 
 ## 适用场景
 
@@ -138,4 +138,4 @@ wget -O port-traffic-dog.sh https://v6.gh-proxy.org/https://raw.githubuserconten
 
 ## 💖 如果对你有帮助
 
-<img src="docs/zywe_赞赏码.jpg" alt="zywe赞赏码" width="50%">
+<img src="./zywe_赞赏码.jpg" alt="zywe赞赏码" width="50%">

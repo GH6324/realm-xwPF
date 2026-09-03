@@ -1,6 +1,6 @@
 # Realm Full-Featured One-Click Network Forwarding Management — Pure Script Relay Server Setup
 
-[中文](README.md) | [English](README_EN.md) | [Port Traffic Dog Introduction](port-traffic-dog-README.md)
+[中文](../README.md) | [English](README_EN.md) | [Port Traffic Dog Introduction](port-traffic-dog-README.md)
 
 ---
 
@@ -13,11 +13,11 @@
 
 ### xwPF.sh Realm Forwarding Script
 
-![xwPF main script UI](docs/xwpf主脚本.gif)
+![xwPF main script UI](./xwpf主脚本.gif)
 
 ### Port Traffic Dog
 
-![Port Traffic Dog UI](docs/流量狗.gif)
+![Port Traffic Dog UI](./流量狗.gif)
 
 ### Relay Network Link Testing Script
 ```
@@ -186,7 +186,7 @@ Realm on the relay simply passes packets received on the configured listen IP:po
 
 The encryption protocol for the entire link is therefore determined by the exit server's application.
 
-![Single-end forwarding architecture](docs/单端转发架构.png)
+![Single-end forwarding architecture](./单端转发架构.png)
 
 </details>
 
@@ -199,7 +199,7 @@ An extra Realm-to-Realm encrypted transport layer is added between the two Realm
 
 #### The relay's encryption type, SNI domain, etc. must match the exit server's — otherwise decryption will fail
 
-![Dual-end tunnel architecture](docs/双端隧道架构.png)
+![Dual-end tunnel architecture](./双端隧道架构.png)
 
 </details>
 
@@ -207,10 +207,10 @@ An extra Realm-to-Realm encrypted transport layer is added between the two Realm
 <summary><strong>Load Balancing + Failover</strong></summary>
 
 - Same port forwarding across multiple exit servers
-![Load balancing](docs/负载均衡.png)
+![Load balancing](./负载均衡.png)
 
 - Frontend > Multiple Relays > Single Exit
-![Frontend multi-relay single-exit](docs/前置多中转单落地.png)
+![Frontend multi-relay single-exit](./前置多中转单落地.png)
 
 - `Round Robin` mode (roundrobin)
 
@@ -386,6 +386,6 @@ MPTCP (created when MPTCP is enabled)
 
 ## 💖 If this helps you
 
-<img src="docs/zywe_赞赏码.jpg" alt="zywe sponsor QR" width="50%">
+<img src="./zywe_赞赏码.jpg" alt="zywe sponsor QR" width="50%">
 
 [![Star History Chart](https://star-history.dera.page/svg?repos=zywe03/realm-xwPF&type=Date)](https://star-history.dera.page/#zywe03/realm-xwPF&Date)

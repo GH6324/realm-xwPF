@@ -1,6 +1,6 @@
 # Realm 全功能一键网络转发管理,纯脚本快速搭建中转服务器
 
-[中文](README.md) | [English](README_EN.md) | [端口流量狗脚本介绍](port-traffic-dog-README.md)
+[中文](README.md) | [English](docs/README_EN.md) | [端口流量狗脚本介绍](docs/port-traffic-dog-README.md)
 
 ---
 
